@@ -52,7 +52,7 @@ CREATE TABLE dim_victima (
     id_victima              SERIAL PRIMARY KEY,
     grupo_edad              VARCHAR(60),
     ciclo_vida              VARCHAR(60),
-    tipo_seguridad_social   CHAR(1),          -- C, S, P, E, N, I
+    tipo_seguridad_social   VARCHAR(60),        -- C, S, P, E, N, I
     actividad               VARCHAR(60),
     CONSTRAINT uq_victima UNIQUE (grupo_edad, ciclo_vida, tipo_seguridad_social, actividad)
 );
