@@ -1,0 +1,28 @@
+# Entornos virtuales
+.venv/
+venv/
+env/
+
+# Caché de Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Variables de entorno / credenciales de la base de datos
+.env
+*.env
+
+# Datos pesados (ajustar si deciden versionar una muestra pequeña)
+data/*.csv
+!data/.gitkeep
+
+# Archivos del sistema operativo
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
