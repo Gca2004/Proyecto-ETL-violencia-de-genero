@@ -13,6 +13,8 @@ Este proyecto construye un pipeline ETL completo para analizar la violencia de g
 
 ## Dataset
 
+
+
 - **SIVIGILA – Violencia de Género (Colombia):** fuente oficial y pública, +10,000 filas, 32 variables.
 - **Histórico Bucaramanga:** 7 años de antigüedad, aporta dimensión temporal y local (Santander).
 
