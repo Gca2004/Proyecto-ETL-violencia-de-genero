@@ -1,24 +1,21 @@
+import os
 import re
 import pandas as pd
+from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 
-# ============================================================
-# 0. CONFIGURACIÓN
-# ============================================================
-DB_USER = "postgres"
-DB_PASSWORD = "Tu_clave_postgresql"
-DB_HOST = "localhost"
-DB_PORT = "5432"
-DB_NAME = "violencia_genero_db"
+load_dotenv()
 
-engine = create_engine(
-    f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-)
+DB_USER = os.getenv("DB_USER", "postgres")
+DB_PASSWORD = os.getenv("DB_PASSWORD")  
+DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_PORT = os.getenv("DB_PORT", "5432")
+DB_NAME = os.getenv("DB_NAME", "violencia_genero_db")
 
-# ============================================================
-# 1. DICCIONARIOS DE DECODIFICACIÓN (según el diccionario oficial
-#    y lo confirmado con el perfilamiento de los datos reales)
-# ============================================================
+DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+engine = create_engine(DATABASE_URL)
+
+#diccionarios de mapeo para decodificar columnas de la raw a valores más legibles
 CON_FIN_MAP = {
     "1": "Vivo",
     "2": "Muerto",
@@ -47,9 +44,8 @@ PARENTEZCO_TYPOS = {
 }
 
 
-# ============================================================
-# 2. FUNCIONES DE LIMPIEZA
-# ============================================================
+#Limpieza y normalización de datos
+
 def normalizar_texto(valor):
     """Quita espacios y convierte vacíos/None a None real."""
     if valor is None:
@@ -65,12 +61,11 @@ def limpiar_parentezco(valor):
     v = normalizar_texto(valor)
     if v is None:
         return None
-    v = re.sub(r"\s*-\s*", "-", v)          # "Ex- algo" -> "Ex-algo"
-    v = v.replace("comañero", "compañero")   # typo real visto en el CSV
-    v = re.sub(r"\s+\(", " (", v)            # un solo espacio antes de "("
+    v = re.sub(r"\s*-\s*", "-", v)          
+    v = v.replace("comañero", "compañero")   
+    v = re.sub(r"\s+\(", " (", v)            
     v = re.sub(r"\(\s*a\s*\)", "(a)", v, flags=re.IGNORECASE)
     return PARENTEZCO_TYPOS.get(v, v)
-
 
 def limpiar_hora(valor):
     """Limpia 'a. m.'/'p. m.' (incluye espacio no separador \\xa0) y
@@ -99,31 +94,43 @@ def limpiar_hora(valor):
     return None
 
 
-# ============================================================
-# 3. LEER LA RAW YA FILTRADA (los dos filtros del plan)
-# ============================================================
-raw = pd.read_sql(
-    "SELECT * FROM raw_violencia_genero "
-    "WHERE sexo = 'Femenino' AND sexo_agre = 'Masculino'",
-    engine,
-)
-total = pd.read_sql("SELECT COUNT(*) AS n FROM raw_violencia_genero", engine).iloc[0, 0]
-solo_mujer = pd.read_sql(
-    "SELECT COUNT(*) AS n FROM raw_violencia_genero WHERE sexo = 'Femenino'", engine
-).iloc[0, 0]
+#Leer la tabla raw_violencia_genero desde PostgreSQL y normalizar columnas
+
+raw_db = pd.read_sql("SELECT * FROM raw_violencia_genero", engine)
+
+# Mapeo de columnas para garantizar nombres estándar en Python
+rename_dict = {
+    "año": "year",
+    "sexo_": "sexo",
+    "area_": "area",
+    "tipo_seguridad_social": "tipo_seguridad_social",
+    "Tipo de Seguridad Social": "tipo_seguridad_social"
+}
+raw_db = raw_db.rename(columns=rename_dict)
+
+# Métrica inicial
+total = len(raw_db)
+solo_mujer = len(raw_db[raw_db["sexo"] == "Femenino"])
+
+# Filtro estricto
+raw = raw_db[(raw_db["sexo"] == "Femenino") & (raw_db["sexo_agre"] == "Masculino")].copy()
+
 print(f"Total raw: {total}")
 print(f"Víctima mujer: {solo_mujer}")
-print(f"Víctima mujer + agresor hombre (base de este script): {len(raw)}")
+print(f"Víctima mujer + agresor hombre (base del script): {len(raw)}")
 
-# Columnas de trabajo, ya limpias en pandas antes de tocar SQL
+# Normalización de textos y números
 raw["departamento"] = raw["departamento"].apply(normalizar_texto)
 raw["municipio"] = raw["municipio"].apply(normalizar_texto)
 raw["area"] = raw["area"].apply(normalizar_texto)
 raw["grupo_edad"] = raw["grupo_edad"].apply(normalizar_texto)
 raw["ciclo_vida"] = raw["ciclo_vida"].apply(normalizar_texto)
-raw["tipo_seg_social_norm"] = raw["tipo_seguridad_social"].apply(
+
+col_seg_social = "tipo_seguridad_social" if "tipo_seguridad_social" in raw.columns else "tipo_seg_social"
+raw["tipo_seg_social_norm"] = raw[col_seg_social].apply(
     lambda v: normalizar_texto(v).title() if normalizar_texto(v) else None
 )
+
 raw["actividad_norm"] = raw["nom_actividad"].apply(normalizar_texto)
 raw["parentezco_norm"] = raw["parentezco_vict"].apply(limpiar_parentezco)
 raw["def_naturaleza_norm"] = raw["def_naturaleza"].apply(normalizar_texto)
@@ -132,27 +139,23 @@ raw["year_num"] = pd.to_numeric(raw["year"], errors="coerce")
 raw["mes_num"] = pd.to_numeric(raw["mes"], errors="coerce")
 raw["semana_num"] = pd.to_numeric(raw["semana"], errors="coerce")
 
-# Diagnóstico: cuántos nulos hay en cada columna de tiempo antes de rellenar
-print(f"Nulos en year: {raw['year_num'].isna().sum()} / mes: {raw['mes_num'].isna().sum()} "
-      f"/ semana: {raw['semana_num'].isna().sum()} (de {len(raw)} filas)")
-
-# Fallback: si year/mes/semana vienen vacíos en la raw (pasa en el dataset
-# histórico de Bucaramanga), se derivan de fec_hecho en vez de perder filas.
+# Manejo de fallback para fechas
 fecha_aux = pd.to_datetime(raw["fec_hecho"], errors="coerce")
 raw["year_num"] = raw["year_num"].fillna(fecha_aux.dt.year)
 raw["mes_num"] = raw["mes_num"].fillna(fecha_aux.dt.month)
 raw["semana_num"] = raw["semana_num"].fillna(fecha_aux.dt.isocalendar().week.astype(float))
 
-# edad_agre: el diccionario dice que el rango válido es 10-99. Cualquier
-# valor FUERA de ese rango (no solo el 0) se convierte a NULL, porque un
-# valor como 5 no es un "código de sin dato" documentado, es un dato
-# inválido/atípico igual de no confiable que el 0.
+# Rango de edad del agresor
 raw["edad_agre_num"] = pd.to_numeric(raw["edad_agre"], errors="coerce")
 raw.loc[(raw["edad_agre_num"] < 10) | (raw["edad_agre_num"] > 99), "edad_agre_num"] = pd.NA
 
-# ============================================================
+# Fuente por defecto si no existe la columna
+if "fuente" not in raw.columns:
+    raw["fuente"] = "SIVIGLIA_RAW"
+
+
 # PARTE 1: Jerarquía geográfica
-# ============================================================
+
 with engine.begin() as conn:
     conn.execute(text(
         "INSERT INTO dim_pais (nombre_pais) VALUES ('Colombia') "
@@ -175,6 +178,7 @@ with engine.begin() as conn:
             "SELECT id_departamento FROM dim_departamento "
             "WHERE id_pais = :id_pais AND nombre_departamento = :depto"
         ), {"id_pais": id_pais, "depto": fila["departamento"]}).scalar()
+        
         conn.execute(text(
             "INSERT INTO dim_municipio (id_departamento, nombre_municipio, area) "
             "VALUES (:id_departamento, :municipio, :area) "
@@ -194,9 +198,9 @@ dim_municipio_lookup = pd.read_sql(
     engine,
 )
 
-# ============================================================
+
 # PARTE 2: dim_tiempo
-# ============================================================
+
 tiempos = raw[["year_num", "mes_num", "semana_num"]].dropna().drop_duplicates()
 with engine.begin() as conn:
     for _, fila in tiempos.iterrows():
@@ -205,13 +209,12 @@ with engine.begin() as conn:
             "VALUES (:year, :mes, :semana) "
             "ON CONFLICT (year, mes, semana) DO NOTHING"
         ), {"year": int(fila["year_num"]), "mes": int(fila["mes_num"]), "semana": int(fila["semana_num"])})
-print(f"PARTE 2 lista: dim_tiempo ({len(tiempos)} combinaciones únicas).")
 
+print(f"PARTE 2 lista: dim_tiempo ({len(tiempos)} combinaciones únicas).")
 dim_tiempo_lookup = pd.read_sql("SELECT * FROM dim_tiempo", engine)
 
-# ============================================================
 # PARTE 3: dim_victima
-# ============================================================
+
 victimas = raw[["grupo_edad", "ciclo_vida", "tipo_seg_social_norm", "actividad_norm"]].drop_duplicates()
 with engine.begin() as conn:
     for _, fila in victimas.iterrows():
@@ -223,22 +226,12 @@ with engine.begin() as conn:
             "grupo_edad": fila["grupo_edad"], "ciclo_vida": fila["ciclo_vida"],
             "tipo_seg": fila["tipo_seg_social_norm"], "actividad": fila["actividad_norm"],
         })
-print(f"PARTE 3 lista: dim_victima ({len(victimas)} combinaciones únicas).")
 
+print(f"PARTE 3 lista: dim_victima ({len(victimas)} combinaciones únicas).")
 dim_victima_lookup = pd.read_sql("SELECT * FROM dim_victima", engine)
 
-# ============================================================
 # PARTE 4: dim_agresor
-#
-# OJO — detalle importante de SQL: como edad_agre puede ser NULL
-# (70% de los casos), y en una restricción UNIQUE dos NULL NO se
-# consideran iguales, ON CONFLICT no evitaría crear una fila nueva
-# por cada agresor sin edad, aunque el parentesco sea el mismo.
-# Por eso la deduplicación real se hace aquí, en pandas, ANTES de
-# insertar (pandas sí trata NaN como igual a NaN en drop_duplicates).
-# sexo_agre se guarda como 'Masculino' fijo: ya es constante tras el
-# filtro, se conserva solo porque la tabla ya la tiene como columna.
-# ============================================================
+
 agresores = raw[["edad_agre_num", "parentezco_norm"]].drop_duplicates()
 with engine.begin() as conn:
     for _, fila in agresores.iterrows():
@@ -248,13 +241,13 @@ with engine.begin() as conn:
             "VALUES (:edad, 'Masculino', :parentezco) "
             "ON CONFLICT (edad_agre, sexo_agre, parentezco_vict) DO NOTHING"
         ), {"edad": edad, "parentezco": fila["parentezco_norm"]})
-print(f"PARTE 4 lista: dim_agresor ({len(agresores)} combinaciones únicas).")
 
+print(f"PARTE 4 lista: dim_agresor ({len(agresores)} combinaciones únicas).")
 dim_agresor_lookup = pd.read_sql("SELECT * FROM dim_agresor", engine)
 
-# ============================================================
+
 # PARTE 5: dim_tipo_violencia
-# ============================================================
+
 tipos = raw[["naturaleza_num", "def_naturaleza_norm"]].dropna().drop_duplicates()
 with engine.begin() as conn:
     for _, fila in tipos.iterrows():
@@ -263,8 +256,8 @@ with engine.begin() as conn:
             "VALUES (:naturaleza, :def_naturaleza) "
             "ON CONFLICT (naturaleza) DO NOTHING"
         ), {"naturaleza": int(fila["naturaleza_num"]), "def_naturaleza": fila["def_naturaleza_norm"]})
-print(f"PARTE 5 lista: dim_tipo_violencia ({len(tipos)} tipos únicos).")
 
+print(f"PARTE 5 lista: dim_tipo_violencia ({len(tipos)} tipos únicos).")
 dim_tipo_lookup = pd.read_sql("SELECT * FROM dim_tipo_violencia", engine)
 
 # ============================================================
@@ -272,31 +265,27 @@ dim_tipo_lookup = pd.read_sql("SELECT * FROM dim_tipo_violencia", engine)
 # ============================================================
 df = raw.copy()
 
-# --- resolver id_municipio ---
 df = df.merge(
     dim_municipio_lookup,
     on=["departamento", "municipio", "area"],
     how="left",
 )
 
-# --- resolver id_tiempo ---
 df = df.merge(
     dim_tiempo_lookup.rename(columns={"year": "year_num", "mes": "mes_num", "semana": "semana_num"}),
     on=["year_num", "mes_num", "semana_num"],
     how="left",
 )
 
-# --- resolver id_victima ---
 df = df.merge(
     dim_victima_lookup.rename(columns={
-        "grupo_edad": "grupo_edad", "ciclo_vida": "ciclo_vida",
-        "tipo_seguridad_social": "tipo_seg_social_norm", "actividad": "actividad_norm",
+        "tipo_seguridad_social": "tipo_seg_social_norm", 
+        "actividad": "actividad_norm"
     }),
     on=["grupo_edad", "ciclo_vida", "tipo_seg_social_norm", "actividad_norm"],
     how="left",
 )
 
-# --- resolver id_agresor (usando -1 como comodín para que NaN "matchee" con NaN) ---
 SENTINELA = -1
 df["edad_merge_key"] = df["edad_agre_num"].fillna(SENTINELA)
 dim_agresor_lookup["edad_merge_key"] = dim_agresor_lookup["edad_agre"].fillna(SENTINELA)
@@ -308,28 +297,25 @@ df = df.merge(
     how="left",
 )
 
-# --- resolver id_tipo_violencia ---
 df = df.merge(
     dim_tipo_lookup.rename(columns={"naturaleza": "naturaleza_num", "def_naturaleza": "def_naturaleza_norm"}),
     on=["naturaleza_num", "def_naturaleza_norm"],
     how="left",
 )
 
-# --- decodificar columnas propias de hechos_violencia ---
-df["con_fin_dec"] = df["con_fin"].map(CON_FIN_MAP)
-df["escenario_dec"] = df["escenario"].map(ESCENARIO_MAP)
-df["pac_hos_bool"] = df["pac_hos"].map(BOOL_MAP)
-df["sust_vict_bool"] = df["sust_vict"].map(BOOL_MAP)
+df["con_fin_dec"] = df["con_fin"].astype(str).str.strip().map(CON_FIN_MAP)
+df["escenario_dec"] = df["escenario"].astype(str).str.strip().map(ESCENARIO_MAP)
+df["pac_hos_bool"] = df["pac_hos"].astype(str).str.strip().map(BOOL_MAP)
+df["sust_vict_bool"] = df["sust_vict"].astype(str).str.strip().map(BOOL_MAP)
 df["fecha_hecho_dt"] = pd.to_datetime(df["fec_hecho"], errors="coerce").dt.date
 df["hora_hecho_time"] = df["hora_hecho"].apply(limpiar_hora)
-df["zona_conf_raw"] = df["zona_conf"].apply(normalizar_texto)  # se guarda sin decodificar (ver plan)
+df["zona_conf_raw"] = df["zona_conf"].apply(normalizar_texto)
 
-# --- filas que no lograron mapear alguna FK (dato faltante en columnas clave) ---
 claves_fk = ["id_municipio", "id_tiempo", "id_victima", "id_agresor", "id_tipo_violencia"]
 sin_fk = df[df[claves_fk].isna().any(axis=1)]
 if len(sin_fk) > 0:
-    print(f"AVISO: {len(sin_fk)} filas no encontraron alguna llave y se descartan de hechos_violencia "
-          f"(revisa columnas clave con valores vacíos en la raw).")
+    print(f"AVISO: {len(sin_fk)} filas no encontraron alguna llave y se descartan de hechos_violencia.")
+
 df = df.dropna(subset=claves_fk)
 
 df_hechos = pd.DataFrame({
@@ -348,9 +334,6 @@ df_hechos = pd.DataFrame({
     "fuente": df["fuente"],
 })
 
-# hechos_violencia no tiene una llave natural única, así que para que el
-# script se pueda volver a correr sin duplicar, se borra primero lo que ya
-# exista de esta misma fuente antes de insertar de nuevo.
 fuente_actual = df_hechos["fuente"].iloc[0] if len(df_hechos) else None
 with engine.begin() as conn:
     if fuente_actual:
