@@ -6,16 +6,9 @@ from sqlalchemy import create_engine, text
 
 load_dotenv()
 
-DB_USER = os.getenv("DB_USER", "postgres")
-DB_PASSWORD = os.getenv("DB_PASSWORD")  
-DB_HOST = os.getenv("DB_HOST", "localhost")
-DB_PORT = os.getenv("DB_PORT", "5432")
-DB_NAME = os.getenv("DB_NAME", "violencia_genero_db")
-
-DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-engine = create_engine(DATABASE_URL)
-
-#diccionarios de mapeo para decodificar columnas de la raw a valores más legibles
+# ============================================================
+# 1. DICCIONARIOS DE DECODIFICACIÓN 
+# ============================================================
 CON_FIN_MAP = {
     "1": "Vivo",
     "2": "Muerto",
@@ -231,7 +224,7 @@ print(f"PARTE 3 lista: dim_victima ({len(victimas)} combinaciones únicas).")
 dim_victima_lookup = pd.read_sql("SELECT * FROM dim_victima", engine)
 
 # PARTE 4: dim_agresor
-
+# ============================================================
 agresores = raw[["edad_agre_num", "parentezco_norm"]].drop_duplicates()
 with engine.begin() as conn:
     for _, fila in agresores.iterrows():

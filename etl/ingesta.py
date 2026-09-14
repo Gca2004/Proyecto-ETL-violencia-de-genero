@@ -12,9 +12,15 @@ load_dotenv()
 
 #configuración de la ruta del archivo CSV y la fuente de datos
 
-CSV_PATH = "data/bucaramanga_violencia.csv.csv"
-FUENTE = "Historico_Bucaramanga" 
+# ============================================================
+# 1. CONFIGURACIÓN 
+# ============================================================
+CSV_PATH = "../data/bucaramanga_violencia.csv.csv"
+FUENTE = "Historico_Bucaramanga"   #  "SIVIGILA_Colombia" para el otro CSV
 
+# True la primera vez: solo lee el CSV e imprime columnas/filas,
+# NO escribe nada en la base de datos. Cuando se confirme que las columnas
+# cambiar a False para cargar de verdad.
 SOLO_INSPECCIONAR = False
 
 DB_USER = os.getenv("DB_USER", "postgres")
@@ -25,6 +31,9 @@ DB_NAME = os.getenv("DB_NAME", "violencia_genero_db")
 
 #nombre de las columnas en el CSV y su mapeo a los nombres de columnas en la tabla raw_violencia_genero
 
+# ============================================================
+# 2. MAPEO: nombre de columna original del CSV -> nombre en raw
+# ============================================================
 COLUMN_MAP = {
     "Orden": "orden",
     "Departamento": "departamento",
@@ -60,8 +69,9 @@ COLUMN_MAP = {
     "MES": "mes",
 }
 
-#leer el CSV con pandas, asegurándose de que todos los campos se traten como texto y que los vacíos reales se conviertan en NULL
-
+# ============================================================
+# 3. LEER EL CSV
+# ============================================================
 df = pd.read_csv(
     CSV_PATH,
     sep=",",

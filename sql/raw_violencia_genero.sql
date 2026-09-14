@@ -1,17 +1,4 @@
--- ============================================================
--- TABLA RAW (staging) — Violencia de género contra mujeres
--- Proyecto ETL - ODS 5 (Igualdad de Género)
--- Recibe el CSV TAL CUAL (todo como TEXT) para preservar
--- la integridad de los datos originales. La limpieza,
--- decodificación y selección de variables (Lasso) se hacen
--- después, en el script de transformación (raw -> final).
---
--- IMPORTANTE para la ingesta (Leidy): el DataFrame de pandas
--- debe renombrar sus columnas para que coincidan EXACTAMENTE
--- con los nombres de columna de esta tabla antes de usar
--- df.to_sql("raw_violencia_genero", engine, if_exists="append", index=False)
--- Ver el mapeo de nombres al final de este archivo (comentado).
--- ============================================================
+
 
 CREATE TABLE raw_violencia_genero (
     id_raw                  SERIAL PRIMARY KEY,

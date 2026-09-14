@@ -111,7 +111,7 @@ CREATE INDEX idx_municipio_depto   ON dim_municipio(id_departamento);
 CREATE INDEX idx_tiempo_year       ON dim_tiempo(year);
 
 -- ------------------------------------------------------------
--- EJEMPLO: cómo se filtra Santander / Bucaramanga con este modelo
+-- EJEMPLO: filtro Santander / Bucaramanga con este modelo
 -- ------------------------------------------------------------
 -- SELECT h.*
 -- FROM hechos_violencia h
