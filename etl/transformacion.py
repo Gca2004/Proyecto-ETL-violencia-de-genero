@@ -16,8 +16,7 @@ engine = create_engine(
 )
 
 # ============================================================
-# 1. DICCIONARIOS DE DECODIFICACIÓN (según el diccionario oficial
-#    y lo confirmado con el perfilamiento de los datos reales)
+# 1. DICCIONARIOS DE DECODIFICACIÓN 
 # ============================================================
 CON_FIN_MAP = {
     "1": "Vivo",
@@ -229,15 +228,6 @@ dim_victima_lookup = pd.read_sql("SELECT * FROM dim_victima", engine)
 
 # ============================================================
 # PARTE 4: dim_agresor
-#
-# OJO — detalle importante de SQL: como edad_agre puede ser NULL
-# (70% de los casos), y en una restricción UNIQUE dos NULL NO se
-# consideran iguales, ON CONFLICT no evitaría crear una fila nueva
-# por cada agresor sin edad, aunque el parentesco sea el mismo.
-# Por eso la deduplicación real se hace aquí, en pandas, ANTES de
-# insertar (pandas sí trata NaN como igual a NaN en drop_duplicates).
-# sexo_agre se guarda como 'Masculino' fijo: ya es constante tras el
-# filtro, se conserva solo porque la tabla ya la tiene como columna.
 # ============================================================
 agresores = raw[["edad_agre_num", "parentezco_norm"]].drop_duplicates()
 with engine.begin() as conn:

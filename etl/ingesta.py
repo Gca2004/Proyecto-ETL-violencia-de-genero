@@ -8,14 +8,14 @@ import pandas as pd
 from sqlalchemy import create_engine
 
 # ============================================================
-# 1. CONFIGURACIÓN — esto es lo único que cambia entre cargas
+# 1. CONFIGURACIÓN 
 # ============================================================
 CSV_PATH = "../data/bucaramanga_violencia.csv.csv"
-FUENTE = "Historico_Bucaramanga"   # usar "SIVIGILA_Colombia" para el otro CSV
+FUENTE = "Historico_Bucaramanga"   #  "SIVIGILA_Colombia" para el otro CSV
 
-# Ponlo en True la primera vez: solo lee el CSV e imprime columnas/filas,
-# NO escribe nada en la base de datos. Cuando confirmes que las columnas
-# coinciden con el diccionario de abajo, cámbialo a False para cargar de verdad.
+# True la primera vez: solo lee el CSV e imprime columnas/filas,
+# NO escribe nada en la base de datos. Cuando se confirme que las columnas
+# cambiar a False para cargar de verdad.
 SOLO_INSPECCIONAR = False
 
 DB_USER = "postgres"
@@ -26,7 +26,6 @@ DB_NAME = "violencia_genero_db"
 
 # ============================================================
 # 2. MAPEO: nombre de columna original del CSV -> nombre en raw
-#    (debe coincidir con sql/raw_violencia_genero.sql)
 # ============================================================
 COLUMN_MAP = {
     "Orden": "orden",
@@ -66,10 +65,6 @@ COLUMN_MAP = {
 # ============================================================
 # 3. LEER EL CSV
 # ============================================================
-# Los CSV de entidades públicas colombianas casi siempre vienen con
-# separador ";" y codificación latin-1 (por las tildes/ñ). Si esta línea
-# da error de encoding o si ves una sola columna gigante (separador mal),
-# avísame el error exacto y lo ajustamos.
 df = pd.read_csv(
     CSV_PATH,
     sep=",",
@@ -117,11 +112,3 @@ engine = create_engine(
 df.to_sql("raw_violencia_genero", engine, if_exists="append", index=False)
 print(f"\nListo: se cargaron {len(df)} filas en raw_violencia_genero (fuente='{FUENTE}').")
 
-# ============================================================
-# NOTA DE SEGURIDAD
-# Este archivo, tal cual, queda con la contraseña de la base de datos en
-# texto plano. NO lo subas a GitHub así. Antes de hacer commit, o borra la
-# contraseña real y deja el placeholder, o (mejor) muévela a un archivo
-# .env (ya está en tu .gitignore) y cárgala con python-dotenv. Si quieres,
-# te muestro cómo hacer ese cambio.
-# ============================================================
