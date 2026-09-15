@@ -8,7 +8,7 @@
 ![Modelo](https://img.shields.io/badge/Modelo-Esquema%20Estrella-orange)
 
 *Ficha técnica de cada tabla, columna, tipo de dato y regla de negocio del Data Warehouse.*
-*Generado a partir de `sql/raw_violencia_genero.sql` y `sql/esquema_violencia_genero.sql`.*
+*Generado a partir de `sql/raw_violencia_genero.sql` y `sql/esquema_violencia_genero.sql`, y validado contra el extracto real `hechos_violencia.csv` (7,872 filas exportadas del Data Warehouse).*
 
 </div>
 
@@ -101,7 +101,7 @@ erDiagram
 | 32 | `nmun_resi` | `TEXT` | ❓ | Municipio de residencia de la víctima | `nmun_resi` |
 | 33 | `mes` | `TEXT` | ❓ | Mes en el que ocurrieron los hechos | `MES` |
 
-> 🚫 **No migran al modelo final:** `orden`, `version`, `nom_eve`, `nom_upgd`, `barrio`, `comuna`, `ndep_resi`, `nmun_resi` → son metadatos del sistema o generan redundancia/ruido geográfico (ver justificación en el `README.md`).
+> 🚫 **No migran al modelo final:** `orden`, `version`, `nom_eve`, `nom_upgd`, `barrio`, `comuna`, `ndep_resi`, `nmun_resi` → son metadatos del sistema o generan redundancia/ruido geográfico (ver justificación en el [`README.md`](../README.md)).
 
 ---
 
@@ -196,25 +196,35 @@ erDiagram
 ## 9. `hechos_violencia` — Tabla de hechos
 
 > Tabla central del esquema estrella: **un registro por hecho de violencia**, conectando todas las dimensiones.
+> 📊 Verificado contra el archivo real `hechos_violencia.csv` exportado del Data Warehouse: **7,872 filas**, `id_hecho` sin duplicados, fechas entre **2008-01-01** y **2025-10-12**.
 
 | Campo | Tipo de dato | ¿Nulo? | Restricción | Descripción |
 |---|:---:|:---:|---|---|
-| `id_hecho` 🔑 | `SERIAL` | No | `PRIMARY KEY` | Identificador único del hecho |
-| `id_municipio` 🔗 | `INT` | No | `REFERENCES dim_municipio(id_municipio)` | Municipio donde ocurrió el hecho |
-| `id_tiempo` 🔗 | `INT` | No | `REFERENCES dim_tiempo(id_tiempo)` | Momento en que ocurrió el hecho |
-| `id_victima` 🔗 | `INT` | No | `REFERENCES dim_victima(id_victima)` | Perfil de la víctima |
-| `id_agresor` 🔗 | `INT` | No | `REFERENCES dim_agresor(id_agresor)` | Perfil del agresor |
-| `id_tipo_violencia` 🔗 | `INT` | No | `REFERENCES dim_tipo_violencia(id_tipo_violencia)` | Tipo/modalidad de violencia |
-| `escenario` | `VARCHAR(60)` | ❓ | — | Lugar del hecho: vía pública, vivienda, establecimiento educativo, etc. |
-| `zona_conf` | `VARCHAR(60)` | ❓ | — | Ámbito del hecho: escolar, laboral, institucional, hogar, etc. |
-| `con_fin` | `VARCHAR(20)` | ❓ | — | Condición final: `Vivo` / `Muerto` / `No sabe` — **permite identificar feminicidios** |
-| `pac_hos` | `BOOLEAN` | ❓ | — | Indica si la víctima fue hospitalizada |
-| `sust_vict` | `BOOLEAN` | ❓ | — | Indica presencia de alcohol u otra sustancia en la víctima |
-| `fecha_hecho` | `DATE` | ❓ | — | Fecha en que ocurrió el hecho |
-| `hora_hecho` | `TIME` | ❓ | — | Hora en que ocurrió el hecho |
-| `fuente` | `VARCHAR(30)` | No | `DEFAULT 'SIVIGILA_Colombia'` | Origen del registro: `SIVIGILA_Colombia` o `Historico_Bucaramanga` |
+| `id_hecho` 🔑 | `SERIAL` | No | `PRIMARY KEY` | Identificador único del hecho (1 a 7,872, sin duplicados) |
+| `id_municipio` 🔗 | `INT` | No | `REFERENCES dim_municipio(id_municipio)` | Municipio donde ocurrió el hecho — 41 municipios distintos en la carga actual |
+| `id_tiempo` 🔗 | `INT` | No | `REFERENCES dim_tiempo(id_tiempo)` | Momento en que ocurrió el hecho — 1,331 períodos distintos |
+| `id_victima` 🔗 | `INT` | No | `REFERENCES dim_victima(id_victima)` | Perfil de la víctima — 172 perfiles distintos |
+| `id_agresor` 🔗 | `INT` | No | `REFERENCES dim_agresor(id_agresor)` | Perfil del agresor — 621 perfiles distintos |
+| `id_tipo_violencia` 🔗 | `INT` | No | `REFERENCES dim_tipo_violencia(id_tipo_violencia)` | Tipo/modalidad de violencia — códigos **1 a 11** presentes en la carga actual (código 12 aún sin registros) |
+| `escenario` | `VARCHAR(60)` | No | — | Lugar del hecho, **ya decodificado a texto**. Dominante: `Vivienda` (68.4%), `Vía pública` (14.0%), `Otro` (9.7%) |
+| `zona_conf` | `INT` | No | — | Ámbito del hecho, **código sin decodificar** en la carga actual. Valores observados: `2` (99.8% de los casos) y `1` (0.2%) — ver nota de calidad abajo ⚠️ |
+| `con_fin` | `VARCHAR(20)` | No | — | Condición final. Valores reales: `Vivo` (99.8%), `Muerto` (0.14%) **← identifica feminicidios**, `Sin información` (0.08%) |
+| `pac_hos` | `BOOLEAN` | No | — | Hospitalización de la víctima. `False`=6,058 (77%) · `True`=1,814 (23%) |
+| `sust_vict` | `BOOLEAN` | No | — | Alcohol/sustancias en la víctima. `False`=7,521 (95.5%) · `True`=351 (4.5%) |
+| `fecha_hecho` | `DATE` | No | — | Fecha del hecho. Rango real: **2008-01-01 → 2025-10-12** |
+| `hora_hecho` | `TIME` | ❓ | — | Hora del hecho. ⚠️ **75.4% de los registros (5,936 de 7,872) están vacíos** en la carga actual |
+| `fuente` | `VARCHAR(30)` | No | `DEFAULT 'SIVIGILA_Colombia'` | Origen del registro. En la carga actual, **el 100% corresponde a `Historico_Bucaramanga`**; `SIVIGILA_Colombia` está definido en el esquema pero aún no cargado en este extracto |
 
 **Índices:** `idx_hechos_municipio`, `idx_hechos_tiempo`, `idx_hechos_fuente`, `idx_departamento_pais`, `idx_municipio_depto`, `idx_tiempo_year` — optimizan las consultas analíticas usadas en el EDA y las visualizaciones.
+
+### ⚠️ Hallazgos de calidad de datos (sobre la carga real)
+
+| Campo | Hallazgo | Recomendación |
+|---|---|---|
+| `hora_hecho` | 75.4% de los registros no tienen hora registrada | Tratar como dato faltante en el EDA; no imputar una hora ficticia |
+| `zona_conf` | El 99.8% de los casos quedó con el código `2` sin decodificar a texto (a diferencia de `escenario`, que sí se decodificó) | Verificar en `etl/transformacion.py` si falta aplicar el mapeo de códigos de `zona_conf` (ver [diccionario de dominios](#-diccionario-de-dominios-códigos-del-csv-original)) |
+| `con_fin` | Solo 11 casos (0.14%) están marcados como `Muerto` — son los feminicidios identificables en este extracto | Filtrar por `con_fin = 'Muerto'` para aislar la sub-muestra que responde la pregunta problema de esta entrega |
+| `fuente` | Este extracto solo contiene `Historico_Bucaramanga` | Confirmar si la carga de `SIVIGILA_Colombia` (dataset nacional) está pendiente o se maneja en otro archivo |
 
 ---
 
@@ -369,6 +379,6 @@ Tablas de referencia para interpretar los valores codificados que trae el datase
 
 <div align="center">
 
-*Documento complementario al `README.md` · Proyecto ETL Violencia de Género — ODS 5*
+*Documento complementario al [`README.md`](../README.md) · Proyecto ETL Violencia de Género — ODS 5*
 
 </div>
