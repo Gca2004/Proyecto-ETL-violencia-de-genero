@@ -1,337 +1,207 @@
+"""
+Módulo de Transformación y Enrutado Dimensional
+"""
+
 import os
-import re
+import logging
+import unicodedata
 import pandas as pd
-from dotenv import load_dotenv
+import numpy as np
 from sqlalchemy import create_engine, text
+from dotenv import load_dotenv
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - [%(levelname)s] - %(name)s - %(message)s'
+)
+logger = logging.getLogger("ETL_Transformacion")
 
 load_dotenv()
 
-# ============================================================
-# 1. DICCIONARIOS DE DECODIFICACIÓN 
-# ============================================================
-CON_FIN_MAP = {
-    "1": "Vivo",
-    "2": "Muerto",
-    "0": "Sin información",   # no está en el diccionario oficial; el patrón
-                               # de los datos confirma que es "sin dato", no
-                               # un cuarto estado real.
-}
-
-ESCENARIO_MAP = {
-    "1": "Vía pública",
-    "2": "Vivienda",
-    "3": "Establecimiento educativo",
-    "4": "Lugar de trabajo",
-    "7": "Otro",
-    "8": "Comercio y áreas de servicios",
-    "9": "Otros espacios abiertos",
-    "10": "Lugares de esparcimiento con expendido de alcohol",
-    "11": "Institución de salud",
-    "12": "Área deportiva y recreativa",
-}
-
-BOOL_MAP = {"1": True, "2": False}
-
-PARENTEZCO_TYPOS = {
-    "Padrasto": "Padrastro",
-}
+DB_USER = os.getenv("DB_USER", "postgres")
+DB_PASSWORD = os.getenv("DB_PASSWORD")
+DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_PORT = os.getenv("DB_PORT", "5432")
+DB_NAME = os.getenv("DB_NAME", "violencia_genero_db")
 
 
-#Limpieza y normalización de datos
-
-def normalizar_texto(valor):
-    """Quita espacios y convierte vacíos/None a None real."""
-    if valor is None:
-        return None
-    v = str(valor).strip()
-    return v if v not in ("", "None", "nan") else None
+def obtener_motor_db():
+    connection_url = f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+    return create_engine(connection_url)
 
 
-def limpiar_parentezco(valor):
-    """Corrige tipeos y normaliza espacios/guiones en parentezco_vict.
-    No corrige la contradicción 'Madre' con agresor masculino: eso se
-    documenta como limitación de calidad de datos, no se adivina."""
-    v = normalizar_texto(valor)
-    if v is None:
-        return None
-    v = re.sub(r"\s*-\s*", "-", v)          
-    v = v.replace("comañero", "compañero")   
-    v = re.sub(r"\s+\(", " (", v)            
-    v = re.sub(r"\(\s*a\s*\)", "(a)", v, flags=re.IGNORECASE)
-    return PARENTEZCO_TYPOS.get(v, v)
-
-def limpiar_hora(valor):
-    """Limpia 'a. m.'/'p. m.' (incluye espacio no separador \\xa0) y
-    convierte a datetime.time. Si no hay dato o no se puede parsear,
-    devuelve None (no se inventa una hora)."""
-    if valor is None:
-        return None
-    v = str(valor).replace("\xa0", " ").strip()
-    if v == "":
-        return None
-    v = re.sub(r"\s+", " ", v)
-    v_norm = (
-        v.upper()
-        .replace("A. M.", "AM")
-        .replace("P. M.", "PM")
-        .replace("A.M.", "AM")
-        .replace("P.M.", "PM")
-        .replace("A M", "AM")
-        .replace("P M", "PM")
-    )
-    for fmt in ("%I:%M:%S %p", "%H:%M:%S"):
-        try:
-            return pd.to_datetime(v_norm, format=fmt).time()
-        except ValueError:
-            continue
-    return None
+def normalizar_cadena(texto) -> str:
+    if pd.isna(texto) or texto is None:
+        return "NO REPORTADO"
+    val_str = str(texto).strip().upper()
+    val_norm = unicodedata.normalize('NFKD', val_str).encode('ASCII', 'ignore').decode('utf-8')
+    return val_norm if val_norm != "" else "NO REPORTADO"
 
 
-#Leer la tabla raw_violencia_genero desde PostgreSQL y normalizar columnas
-
-raw_db = pd.read_sql("SELECT * FROM raw_violencia_genero", engine)
-
-# Mapeo de columnas para garantizar nombres estándar en Python
-rename_dict = {
-    "año": "year",
-    "sexo_": "sexo",
-    "area_": "area",
-    "tipo_seguridad_social": "tipo_seguridad_social",
-    "Tipo de Seguridad Social": "tipo_seguridad_social"
-}
-raw_db = raw_db.rename(columns=rename_dict)
-
-# Métrica inicial
-total = len(raw_db)
-solo_mujer = len(raw_db[raw_db["sexo"] == "Femenino"])
-
-# Filtro estricto
-raw = raw_db[(raw_db["sexo"] == "Femenino") & (raw_db["sexo_agre"] == "Masculino")].copy()
-
-print(f"Total raw: {total}")
-print(f"Víctima mujer: {solo_mujer}")
-print(f"Víctima mujer + agresor hombre (base del script): {len(raw)}")
-
-# Normalización de textos y números
-raw["departamento"] = raw["departamento"].apply(normalizar_texto)
-raw["municipio"] = raw["municipio"].apply(normalizar_texto)
-raw["area"] = raw["area"].apply(normalizar_texto)
-raw["grupo_edad"] = raw["grupo_edad"].apply(normalizar_texto)
-raw["ciclo_vida"] = raw["ciclo_vida"].apply(normalizar_texto)
-
-col_seg_social = "tipo_seguridad_social" if "tipo_seguridad_social" in raw.columns else "tipo_seg_social"
-raw["tipo_seg_social_norm"] = raw[col_seg_social].apply(
-    lambda v: normalizar_texto(v).title() if normalizar_texto(v) else None
-)
-
-raw["actividad_norm"] = raw["nom_actividad"].apply(normalizar_texto)
-raw["parentezco_norm"] = raw["parentezco_vict"].apply(limpiar_parentezco)
-raw["def_naturaleza_norm"] = raw["def_naturaleza"].apply(normalizar_texto)
-raw["naturaleza_num"] = pd.to_numeric(raw["naturaleza"], errors="coerce")
-raw["year_num"] = pd.to_numeric(raw["year"], errors="coerce")
-raw["mes_num"] = pd.to_numeric(raw["mes"], errors="coerce")
-raw["semana_num"] = pd.to_numeric(raw["semana"], errors="coerce")
-
-# Manejo de fallback para fechas
-fecha_aux = pd.to_datetime(raw["fec_hecho"], errors="coerce")
-raw["year_num"] = raw["year_num"].fillna(fecha_aux.dt.year)
-raw["mes_num"] = raw["mes_num"].fillna(fecha_aux.dt.month)
-raw["semana_num"] = raw["semana_num"].fillna(fecha_aux.dt.isocalendar().week.astype(float))
-
-# Rango de edad del agresor
-raw["edad_agre_num"] = pd.to_numeric(raw["edad_agre"], errors="coerce")
-raw.loc[(raw["edad_agre_num"] < 10) | (raw["edad_agre_num"] > 99), "edad_agre_num"] = pd.NA
-
-# Fuente por defecto si no existe la columna
-if "fuente" not in raw.columns:
-    raw["fuente"] = "SIVIGLIA_RAW"
-
-
-# PARTE 1: Jerarquía geográfica
-
-with engine.begin() as conn:
-    conn.execute(text(
-        "INSERT INTO dim_pais (nombre_pais) VALUES ('Colombia') "
-        "ON CONFLICT (nombre_pais) DO NOTHING"
-    ))
-    id_pais = conn.execute(text(
-        "SELECT id_pais FROM dim_pais WHERE nombre_pais = 'Colombia'"
-    )).scalar()
-
-    for depto in raw["departamento"].dropna().unique():
-        conn.execute(text(
-            "INSERT INTO dim_departamento (id_pais, nombre_departamento) "
-            "VALUES (:id_pais, :depto) "
-            "ON CONFLICT (id_pais, nombre_departamento) DO NOTHING"
-        ), {"id_pais": id_pais, "depto": depto})
-
-    municipios = raw[["departamento", "municipio", "area"]].dropna().drop_duplicates()
-    for _, fila in municipios.iterrows():
-        id_departamento = conn.execute(text(
-            "SELECT id_departamento FROM dim_departamento "
-            "WHERE id_pais = :id_pais AND nombre_departamento = :depto"
-        ), {"id_pais": id_pais, "depto": fila["departamento"]}).scalar()
+def calcular_turno(hora_raw) -> str:
+    """1. Derivación de hora a turno (Mañana, Tarde, Noche, Madrugada)."""
+    if pd.isna(hora_raw) or hora_raw is None:
+        return "NO REPORTADO"
+    
+    val = str(hora_raw).strip().lower()
+    
+    if '18:' in val or '19:' in val or '20:' in val or '21:' in val or '22:' in val or '23:' in val or 'noche' in val:
+        return "NOCHE"
+    elif '06:' in val or '07:' in val or '08:' in val or '09:' in val or '10:' in val or '11:' in val or 'mañana' in val:
+        return "MAÑANA"
+    elif '12:' in val or '13:' in val or '14:' in val or '15:' in val or '16:' in val or '17:' in val or 'tarde' in val:
+        return "TARDE"
+    elif '00:' in val or '01:' in val or '02:' in val or '03:' in val or '04:' in val or '05:' in val or 'madrugada' in val:
+        return "MADRUGADA"
+    
+    try:
+        hora_int = int(val.split(':')[0])
+        if 0 <= hora_int < 6:
+            return "MADRUGADA"
+        elif 6 <= hora_int < 12:
+            return "MAÑANA"
+        elif 12 <= hora_int < 18:
+            return "TARDE"
+        elif 18 <= hora_int <= 23:
+            return "NOCHE"
+    except Exception:
+        pass
         
-        conn.execute(text(
-            "INSERT INTO dim_municipio (id_departamento, nombre_municipio, area) "
-            "VALUES (:id_departamento, :municipio, :area) "
-            "ON CONFLICT (id_departamento, nombre_municipio, area) DO NOTHING"
-        ), {"id_departamento": id_departamento, "municipio": fila["municipio"], "area": fila["area"]})
-
-print("PARTE 1 lista: jerarquía geográfica cargada.")
-
-# Lookup completo de municipio para usarlo en la PARTE 6
-dim_municipio_lookup = pd.read_sql(
-    """
-    SELECT m.id_municipio, d.nombre_departamento AS departamento,
-           m.nombre_municipio AS municipio, m.area
-    FROM dim_municipio m
-    JOIN dim_departamento d ON m.id_departamento = d.id_departamento
-    """,
-    engine,
-)
+    return "NO REPORTADO"
 
 
-# PARTE 2: dim_tiempo
+def ejecutar_transformacion_y_enrutado() -> dict:
+    logger.info("Iniciando proceso de Transformación y Enrutado Dimensional...")
+    engine = obtener_motor_db()
+    
+    df_raw = pd.read_sql("SELECT * FROM raw_violencia_genero;", engine)
+    if df_raw.empty:
+        logger.error("La tabla 'raw_violencia_genero' está vacía.")
+        return {}
 
-tiempos = raw[["year_num", "mes_num", "semana_num"]].dropna().drop_duplicates()
-with engine.begin() as conn:
-    for _, fila in tiempos.iterrows():
-        conn.execute(text(
-            "INSERT INTO dim_tiempo (year, mes, semana) "
-            "VALUES (:year, :mes, :semana) "
-            "ON CONFLICT (year, mes, semana) DO NOTHING"
-        ), {"year": int(fila["year_num"]), "mes": int(fila["mes_num"]), "semana": int(fila["semana_num"])})
+    df = df_raw.copy()
 
-print(f"PARTE 2 lista: dim_tiempo ({len(tiempos)} combinaciones únicas).")
-dim_tiempo_lookup = pd.read_sql("SELECT * FROM dim_tiempo", engine)
+    # Estandarización de Código DANE
+    if 'nmun_resi' in df.columns:
+        df['codigo_dane_clean'] = df['nmun_resi'].astype(str).str.replace(r'\.0$', '', regex=True).str.zfill(5)
+    else:
+        df['codigo_dane_clean'] = "00000"
 
-# PARTE 3: dim_victima
+    cols_a_limpiar = ['departamento', 'municipio', 'sexo', 'ciclo_vida', 'grupo_edad', 
+                       'tipo_seguridad_social', 'parentezco_vict', 'naturaleza', 'escenario']
+    for col in cols_a_limpiar:
+        if col in df.columns:
+            df[col] = df[col].apply(normalizar_cadena)
+        else:
+            df[col] = "NO REPORTADO"
 
-victimas = raw[["grupo_edad", "ciclo_vida", "tipo_seg_social_norm", "actividad_norm"]].drop_duplicates()
-with engine.begin() as conn:
-    for _, fila in victimas.iterrows():
-        conn.execute(text(
-            "INSERT INTO dim_victima (grupo_edad, ciclo_vida, tipo_seguridad_social, actividad) "
-            "VALUES (:grupo_edad, :ciclo_vida, :tipo_seg, :actividad) "
-            "ON CONFLICT (grupo_edad, ciclo_vida, tipo_seguridad_social, actividad) DO NOTHING"
-        ), {
-            "grupo_edad": fila["grupo_edad"], "ciclo_vida": fila["ciclo_vida"],
-            "tipo_seg": fila["tipo_seg_social_norm"], "actividad": fila["actividad_norm"],
-        })
+    if 'fec_hecho' in df.columns and df['fec_hecho'].notnull().any():
+        df['fecha_dt'] = pd.to_datetime(df['fec_hecho'], errors='coerce')
+    else:
+        df['year_clean'] = pd.to_numeric(df['year'], errors='coerce').fillna(2023).astype(int)
+        df['fecha_dt'] = pd.to_datetime(df['year_clean'].astype(str) + '-01-01', errors='coerce')
 
-print(f"PARTE 3 lista: dim_victima ({len(victimas)} combinaciones únicas).")
-dim_victima_lookup = pd.read_sql("SELECT * FROM dim_victima", engine)
+    if 'hora_hecho' in df.columns:
+        df['turno'] = df['hora_hecho'].apply(calcular_turno)
+        df.drop(columns=['hora_hecho'], inplace=True, errors='ignore')
+    else:
+        df['turno'] = "NO REPORTADO"
 
-# PARTE 4: dim_agresor
-# ============================================================
-agresores = raw[["edad_agre_num", "parentezco_norm"]].drop_duplicates()
-with engine.begin() as conn:
-    for _, fila in agresores.iterrows():
-        edad = None if pd.isna(fila["edad_agre_num"]) else int(fila["edad_agre_num"])
-        conn.execute(text(
-            "INSERT INTO dim_agresor (edad_agre, sexo_agre, parentezco_vict) "
-            "VALUES (:edad, 'Masculino', :parentezco) "
-            "ON CONFLICT (edad_agre, sexo_agre, parentezco_vict) DO NOTHING"
-        ), {"edad": edad, "parentezco": fila["parentezco_norm"]})
+    # Dim_Ubicacion
+    Dim_Ubicacion = df[['codigo_dane_clean', 'departamento', 'municipio']].drop_duplicates().reset_index(drop=True)
+    Dim_Ubicacion['id_ubicacion_sk'] = Dim_Ubicacion.index + 1
+    Dim_Ubicacion.rename(columns={
+        'codigo_dane_clean': 'codigo_dane',
+        'departamento': 'nombre_departamento',
+        'municipio': 'nombre_municipio'
+    }, inplace=True)
 
-print(f"PARTE 4 lista: dim_agresor ({len(agresores)} combinaciones únicas).")
-dim_agresor_lookup = pd.read_sql("SELECT * FROM dim_agresor", engine)
+    # Dim_Jornada
+    Dim_Jornada = df[['fecha_dt', 'turno']].drop_duplicates().reset_index(drop=True)
+    Dim_Jornada['id_jornada_sk'] = Dim_Jornada.index + 1
+    Dim_Jornada['anio'] = Dim_Jornada['fecha_dt'].dt.year.fillna(2023).astype(int)
+    Dim_Jornada['mes'] = Dim_Jornada['fecha_dt'].dt.month.fillna(1).astype(int)
+    Dim_Jornada['nombre_mes'] = Dim_Jornada['fecha_dt'].dt.month_name().fillna("ENERO")
+    Dim_Jornada['dia'] = Dim_Jornada['fecha_dt'].dt.day.fillna(1).astype(int)
+
+    # Dim_TipoViolencia
+    Dim_TipoViolencia = df[['parentezco_vict', 'naturaleza', 'escenario']].drop_duplicates().reset_index(drop=True)
+    Dim_TipoViolencia['id_tipo_violencia_sk'] = Dim_TipoViolencia.index + 1
+    Dim_TipoViolencia.rename(columns={'parentezco_vict': 'parentesco_agresor'}, inplace=True)
+
+    # Dim_Victima
+    Dim_Victima = df[['sexo', 'ciclo_vida', 'grupo_edad', 'tipo_seguridad_social']].drop_duplicates().reset_index(drop=True)
+    Dim_Victima['id_victima_sk'] = Dim_Victima.index + 1
+    Dim_Victima.rename(columns={'tipo_seguridad_social': 'escolaridad_o_seguridad'}, inplace=True)
+
+    # Fact_Violencia (MERGES UNÍVOCOS POR CLAVES COMPLETAS)
+    fact_df = df.merge(
+        Dim_Ubicacion, 
+        left_on=['codigo_dane_clean', 'departamento', 'municipio'], 
+        right_on=['codigo_dane', 'nombre_departamento', 'nombre_municipio'], 
+        how='left'
+    )
+    fact_df = fact_df.merge(
+        Dim_Jornada, 
+        left_on=['fecha_dt', 'turno'], 
+        right_on=['fecha_dt', 'turno'], 
+        how='left'
+    )
+    fact_df = fact_df.merge(
+        Dim_TipoViolencia, 
+        left_on=['parentezco_vict', 'naturaleza', 'escenario'], 
+        right_on=['parentesco_agresor', 'naturaleza', 'escenario'], 
+        how='left'
+    )
+    fact_df = fact_df.merge(
+        Dim_Victima, 
+        left_on=['sexo', 'ciclo_vida', 'grupo_edad', 'tipo_seguridad_social'], 
+        right_on=['sexo', 'ciclo_vida', 'grupo_edad', 'escolaridad_o_seguridad'], 
+        how='left'
+    )
+
+    Fact_Violencia = fact_df[[
+        'id_ubicacion_sk',
+        'id_jornada_sk',
+        'id_tipo_violencia_sk',
+        'id_victima_sk'
+    ]].copy()
+
+    Fact_Violencia['cantidad_casos'] = 1
+    Fact_Violencia.reset_index(drop=True, inplace=True)
+    Fact_Violencia['id_fact_sk'] = Fact_Violencia.index + 1
+    Fact_Violencia.fillna(1, inplace=True)
+
+    logger.info(f"Transformación completada sin duplicaciones. Total registros en Fact_Violencia: {len(Fact_Violencia)}")
+
+    return {
+        "Dim_Ubicacion": Dim_Ubicacion,
+        "Dim_Jornada": Dim_Jornada,
+        "Dim_TipoViolencia": Dim_TipoViolencia,
+        "Dim_Victima": Dim_Victima,
+        "Fact_Violencia": Fact_Violencia
+    }
+
+def persistir_esquema_dimensional(tablas: dict):
+    if not tablas:
+        return
+
+    engine = obtener_motor_db()
+    tablas_a_limpiar = ["Fact_Violencia", "fact_violencia", "hechos_violencia", "Dim_Ubicacion", "dim_municipio", 
+                        "Dim_Jornada", "dim_tiempo", "Dim_TipoViolencia", "dim_tipo_violencia", "Dim_Victima", "dim_victima"]
+    
+    with engine.begin() as conn:
+        for t in tablas_a_limpiar:
+            conn.execute(text(f"DROP TABLE IF EXISTS {t} CASCADE;"))
+
+    for nombre_tabla, df_tabla in tablas.items():
+        df_tabla.to_sql(nombre_tabla, engine, if_exists="replace", index=False)
+        logger.info(f"Tabla '{nombre_tabla}' persistida ({len(df_tabla)} filas).")
+
+    engine.dispose()
 
 
-# PARTE 5: dim_tipo_violencia
-
-tipos = raw[["naturaleza_num", "def_naturaleza_norm"]].dropna().drop_duplicates()
-with engine.begin() as conn:
-    for _, fila in tipos.iterrows():
-        conn.execute(text(
-            "INSERT INTO dim_tipo_violencia (naturaleza, def_naturaleza) "
-            "VALUES (:naturaleza, :def_naturaleza) "
-            "ON CONFLICT (naturaleza) DO NOTHING"
-        ), {"naturaleza": int(fila["naturaleza_num"]), "def_naturaleza": fila["def_naturaleza_norm"]})
-
-print(f"PARTE 5 lista: dim_tipo_violencia ({len(tipos)} tipos únicos).")
-dim_tipo_lookup = pd.read_sql("SELECT * FROM dim_tipo_violencia", engine)
-
-# ============================================================
-# PARTE 6: hechos_violencia
-# ============================================================
-df = raw.copy()
-
-df = df.merge(
-    dim_municipio_lookup,
-    on=["departamento", "municipio", "area"],
-    how="left",
-)
-
-df = df.merge(
-    dim_tiempo_lookup.rename(columns={"year": "year_num", "mes": "mes_num", "semana": "semana_num"}),
-    on=["year_num", "mes_num", "semana_num"],
-    how="left",
-)
-
-df = df.merge(
-    dim_victima_lookup.rename(columns={
-        "tipo_seguridad_social": "tipo_seg_social_norm", 
-        "actividad": "actividad_norm"
-    }),
-    on=["grupo_edad", "ciclo_vida", "tipo_seg_social_norm", "actividad_norm"],
-    how="left",
-)
-
-SENTINELA = -1
-df["edad_merge_key"] = df["edad_agre_num"].fillna(SENTINELA)
-dim_agresor_lookup["edad_merge_key"] = dim_agresor_lookup["edad_agre"].fillna(SENTINELA)
-df = df.merge(
-    dim_agresor_lookup.rename(columns={"parentezco_vict": "parentezco_norm"})[
-        ["id_agresor", "edad_merge_key", "parentezco_norm"]
-    ],
-    on=["edad_merge_key", "parentezco_norm"],
-    how="left",
-)
-
-df = df.merge(
-    dim_tipo_lookup.rename(columns={"naturaleza": "naturaleza_num", "def_naturaleza": "def_naturaleza_norm"}),
-    on=["naturaleza_num", "def_naturaleza_norm"],
-    how="left",
-)
-
-df["con_fin_dec"] = df["con_fin"].astype(str).str.strip().map(CON_FIN_MAP)
-df["escenario_dec"] = df["escenario"].astype(str).str.strip().map(ESCENARIO_MAP)
-df["pac_hos_bool"] = df["pac_hos"].astype(str).str.strip().map(BOOL_MAP)
-df["sust_vict_bool"] = df["sust_vict"].astype(str).str.strip().map(BOOL_MAP)
-df["fecha_hecho_dt"] = pd.to_datetime(df["fec_hecho"], errors="coerce").dt.date
-df["hora_hecho_time"] = df["hora_hecho"].apply(limpiar_hora)
-df["zona_conf_raw"] = df["zona_conf"].apply(normalizar_texto)
-
-claves_fk = ["id_municipio", "id_tiempo", "id_victima", "id_agresor", "id_tipo_violencia"]
-sin_fk = df[df[claves_fk].isna().any(axis=1)]
-if len(sin_fk) > 0:
-    print(f"AVISO: {len(sin_fk)} filas no encontraron alguna llave y se descartan de hechos_violencia.")
-
-df = df.dropna(subset=claves_fk)
-
-df_hechos = pd.DataFrame({
-    "id_municipio": df["id_municipio"].astype(int),
-    "id_tiempo": df["id_tiempo"].astype(int),
-    "id_victima": df["id_victima"].astype(int),
-    "id_agresor": df["id_agresor"].astype(int),
-    "id_tipo_violencia": df["id_tipo_violencia"].astype(int),
-    "escenario": df["escenario_dec"],
-    "zona_conf": df["zona_conf_raw"],
-    "con_fin": df["con_fin_dec"],
-    "pac_hos": df["pac_hos_bool"],
-    "sust_vict": df["sust_vict_bool"],
-    "fecha_hecho": df["fecha_hecho_dt"],
-    "hora_hecho": df["hora_hecho_time"],
-    "fuente": df["fuente"],
-})
-
-fuente_actual = df_hechos["fuente"].iloc[0] if len(df_hechos) else None
-with engine.begin() as conn:
-    if fuente_actual:
-        conn.execute(text("DELETE FROM hechos_violencia WHERE fuente = :f"), {"f": fuente_actual})
-    df_hechos.to_sql("hechos_violencia", conn, if_exists="append", index=False)
-
-print(f"PARTE 6 lista: {len(df_hechos)} filas insertadas en hechos_violencia (fuente='{fuente_actual}').")
-print("\nTransformación completa.")
+if __name__ == "__main__":
+    tablas_dw = ejecutar_transformacion_y_enrutado()
+    persistir_esquema_dimensional(tablas_dw)
+    print("\n¡Transformación actualizada con los nombres de tablas requeridos!")
