@@ -1,0 +1,110 @@
+flowchart TB
+    subgraph INF["Infraestructura · Docker Compose · Airflow 3.3.2 CeleryExecutor · DAG etl_violencia_genero_bucaramanga · diario 6:00 a. m."]
+        direction LR
+        I1["apiserver :8080"] ~~~ I2["scheduler"] ~~~ I3["dag-processor"] ~~~ I4["worker"] ~~~ I5["triggerer"] ~~~ I6[("postgres<br/>metadatos")] ~~~ I7[("redis")]
+    end
+
+    INF ~~~ F
+    INF -. "orquesta el DAG · conexión host.docker.internal" .-> E
+
+    subgraph F["① Fuentes"]
+        F1["📄 SIVIGILA<br/>CSV histórico Bucaramanga<br/>primera entrega"]
+        F2["🌐 API Medicina Legal<br/>datos.gov.co · ers2-kerr<br/>Bucaramanga + muestra<br/>nacional de 50.000"]
+        F3["📄 ECV 2024 · DANE<br/>CSV de vivienda"]
+        F4["🕸️ OSEC · Alcaldía<br/>boletines PDF mensuales"]
+        F5["🌐 DIVIPOLA · DANE<br/>datos.gov.co · gdxc-w37w"]
+    end
+
+    subgraph E["② Extracción en paralelo<br/>etl/ingesta.py · Airflow"]
+        T1["extraer_sivigila"]
+        T2["extraer_api"]
+        T3["extraer_vivienda"]
+        T4["extraer_scraping<br/>incremental · 45 min<br/>etl/extraer_scraping.py"]
+    end
+
+    subgraph R["③ Zona cruda · PostgreSQL · texto + trazabilidad"]
+        R1[("raw_violencia_genero")]
+        R2[("raw_api_violencia<br/>alcance BUCARAMANGA /<br/>MUESTRA_NACIONAL")]
+        R3[("raw_vivienda")]
+        R4[("raw_scraping_boletines<br/>+ raw_scraping_comunas")]
+    end
+
+    subgraph TR["④ Transformación · Airflow"]
+        T5["transformar_violencia<br/>etl/transformacion.py<br/>+ etl/turno.py"]
+        T6["transformar_fuentes_nuevas<br/>etl/transformacion_entrega2.py<br/>+ etl/homologacion.py"]
+        T5 --> T6
+    end
+
+    subgraph S["⑤ Staging · PostgreSQL"]
+        S1[("stg_hechos_api")]
+        S2[("stg_hechos_osec")]
+        S3[("stg_hechos_analisis")]
+        S4[("stg_codigo_dane")]
+        S5[("stg_dataset_unificado")]
+    end
+
+    subgraph V["⑥ Validación · Airflow"]
+        T7{"validar_calidad<br/>Great Expectations 1.24.0<br/>62 expectativas · 5 suites<br/>retries = 0"}
+        LOG[("log_validaciones")]
+        JSON["📁 data/validaciones/*.json"]
+        BLOQ["⛔ alguna falla:<br/>upstream_failed,<br/>no se carga nada"]
+        T7 --> LOG
+        T7 --> JSON
+        T7 -. "❌" .-> BLOQ
+    end
+
+    subgraph C["⑦ Carga · Airflow"]
+        T8["cargar_fuentes_nuevas<br/>sql/cargar_entrega2.sql<br/>una sola transacción"]
+    end
+
+    subgraph M["⑧ Modelo galaxia · PostgreSQL 18"]
+        D["Dimensiones compartidas<br/>dim_pais · dim_departamento<br/>dim_municipio (+ código DANE)<br/>dim_tiempo · dim_comuna<br/>dim_victima · dim_agresor<br/>dim_tipo_violencia · dim_estrato"]
+        H1["hechos_violencia<br/>SIVIGILA"]
+        H2["hechos_api_violencia<br/>Medicina Legal"]
+        H3["hechos_osec_comuna<br/>OSEC"]
+        H4["hechos_analisis<br/>ECV 2024"]
+        DU["dataset_unificado<br/>año-mes · outer join · NULL ≠ 0"]
+        VC["vista_comuna_anual<br/>FULL OUTER JOIN"]
+        D --- H1 & H2 & H3 & H4
+        H1 & H3 --> VC
+    end
+
+    subgraph P["⑨ Consumo y visualización"]
+        VW["11 vistas vw_pbi_*<br/>sql/vistas_dashboard.sql"]
+        BI["📊 Power BI · 6 páginas<br/>Panorama · Integración y calidad<br/>Agresores · Perfil de la violencia<br/>Territorio y condiciones de vida<br/>Hallazgos y prevención"]
+        VW --> BI
+    end
+
+    F1 --> T1 --> R1
+    F2 --> T2 --> R2
+    F3 --> T3 --> R3
+    F4 --> T4 --> R4
+    R1 --> T5
+    R2 & R3 & R4 --> T6
+    F5 --> T6
+    T5 --> D
+    T5 --> H1
+    T6 --> S1 & S2 & S3 & S4 & S5
+    S1 & S2 & S3 & S4 & S5 --> T7
+    T7 -- "✅ 62/62" --> T8
+    T8 --> H2 & H3 & H4 & DU
+    T8 -- "código DANE" --> D
+    M --> VW
+    LOG --> VW
+
+    classDef fuente fill:#e8f1fc,stroke:#2a78d6,color:#0b2545
+    classDef tarea fill:#fff4dc,stroke:#eda100,color:#3d2a00
+    classDef raw fill:#f1f1f1,stroke:#8a8a8a,color:#222
+    classDef stg fill:#fde7dc,stroke:#eb6834,color:#4a1a05
+    classDef modelo fill:#dcf3ea,stroke:#1baf7a,color:#06331f
+    classDef vista fill:#ece9fb,stroke:#6250d6,color:#1d1550
+    classDef alerta fill:#fbd5c4,stroke:#c0392b,color:#5a0f05
+    class F1,F2,F3,F4,F5 fuente
+    class T1,T2,T3,T4,T5,T6,T7,T8 tarea
+    class R1,R2,R3,R4,JSON raw
+    class S1,S2,S3,S4,S5 stg
+    class D,H1,H2,H3,H4,DU,VC,LOG modelo
+    class VW,BI vista
+    classDef infra fill:#eef2f7,stroke:#5b6b80,color:#1b2533
+    class I1,I2,I3,I4,I5,I6,I7 infra
+    class BLOQ alerta

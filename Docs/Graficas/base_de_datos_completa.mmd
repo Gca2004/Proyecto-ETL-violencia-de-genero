@@ -1,0 +1,181 @@
+erDiagram
+    %% ===== Jerarquía geográfica =====
+    dim_pais ||--o{ dim_departamento : "contiene"
+    dim_departamento ||--o{ dim_municipio : "contiene"
+
+    %% ===== Estrella 1: SIVIGILA =====
+    dim_municipio ||--o{ hechos_violencia : "lugar"
+    dim_tiempo ||--o{ hechos_violencia : "año-mes-semana"
+    dim_victima ||--o{ hechos_violencia : "víctima"
+    dim_agresor ||--o{ hechos_violencia : "agresor"
+    dim_tipo_violencia ||--o{ hechos_violencia : "naturaleza"
+    dim_comuna |o--o{ hechos_violencia : "comuna"
+
+    %% ===== Estrella 2: Medicina Legal (API) =====
+    dim_municipio ||--o{ hechos_api_violencia : "lugar"
+    dim_tiempo ||--o{ hechos_api_violencia : "año-mes"
+
+    %% ===== Estrella 3: OSEC (scraping) =====
+    dim_comuna ||--o{ hechos_osec_comuna : "comuna"
+    dim_tiempo ||--o{ hechos_osec_comuna : "año-mes"
+
+    %% ===== Estrella 4: ECV 2024 (vivienda) =====
+    dim_departamento ||--o{ hechos_analisis : "departamento"
+    dim_municipio ||--o{ hechos_analisis : "lugar"
+    dim_estrato ||--o{ hechos_analisis : "estrato"
+
+    %% ===== Conjuntos derivados (merge) =====
+    dim_tiempo ||..o| dataset_unificado : "anio + mes (lógica)"
+    dim_comuna ||..o{ vista_comuna_anual : "id_comuna (lógica)"
+
+    dim_pais {
+        SERIAL id_pais PK
+        VARCHAR nombre_pais UK "Colombia"
+    }
+    dim_departamento {
+        SERIAL id_departamento PK
+        INT id_pais FK
+        VARCHAR nombre_departamento
+    }
+    dim_municipio {
+        SERIAL id_municipio PK
+        INT id_departamento FK
+        VARCHAR nombre_municipio
+        VARCHAR area "cabecera / centro poblado / rural"
+        VARCHAR codigo_dane "DIVIPOLA, ej. 68001"
+        NUMERIC latitud
+        NUMERIC longitud
+    }
+    dim_tiempo {
+        SERIAL id_tiempo PK
+        INT year
+        INT mes
+        INT semana "0 = la fuente no trae semana"
+    }
+    dim_comuna {
+        SMALLINT id_comuna PK "1-17, 101-103, 0"
+        SMALLINT numero_comuna "1 a 17"
+        VARCHAR nombre_comuna UK
+        VARCHAR nombre_alterno
+        VARCHAR tipo "COMUNA / CORREGIMIENTO / SIN UBICACION"
+    }
+    dim_victima {
+        SERIAL id_victima PK
+        VARCHAR grupo_edad
+        VARCHAR ciclo_vida
+        VARCHAR tipo_seguridad_social
+        VARCHAR actividad
+    }
+    dim_agresor {
+        SERIAL id_agresor PK
+        INT edad_agre "10 a 99"
+        VARCHAR sexo_agre
+        VARCHAR parentezco_vict
+    }
+    dim_tipo_violencia {
+        SERIAL id_tipo_violencia PK
+        INT naturaleza UK
+        VARCHAR def_naturaleza
+    }
+    dim_estrato {
+        SMALLINT id_estrato PK "1 a 6"
+        VARCHAR nombre_estrato UK
+        VARCHAR nivel_estrato
+    }
+    hechos_violencia {
+        SERIAL id_hecho PK
+        INT id_municipio FK
+        INT id_tiempo FK
+        INT id_victima FK
+        INT id_agresor FK
+        INT id_tipo_violencia FK
+        SMALLINT id_comuna FK
+        VARCHAR sexo_victima
+        VARCHAR escenario
+        VARCHAR zona_conf
+        VARCHAR con_fin
+        BOOLEAN pac_hos
+        BOOLEAN sust_vict
+        DATE fecha_hecho
+        VARCHAR turno "MAÑANA / TARDE / NOCHE / NO REPORTADO"
+        VARCHAR fuente
+    }
+    hechos_api_violencia {
+        SERIAL id_hecho_api PK
+        TEXT id_caso_api UK
+        INT id_municipio FK
+        INT id_tiempo FK
+        VARCHAR ciclo_vida "homologado"
+        VARCHAR grupo_agresor "homologado"
+        VARCHAR presunto_agresor
+        VARCHAR sexo_agresor
+        VARCHAR tipo_violencia
+        VARCHAR contexto
+        VARCHAR escenario
+        VARCHAR turno
+        VARCHAR dias_incapacidad "rangos"
+        VARCHAR fuente
+    }
+    hechos_osec_comuna {
+        SERIAL id_hecho_osec PK
+        SMALLINT id_comuna FK
+        INT id_tiempo FK
+        VARCHAR delito "VIF / DELITOS SEXUALES"
+        INT casos ">= 0"
+        VARCHAR publicado_en "boletín AAAAMM"
+        VARCHAR fuente
+    }
+    hechos_analisis {
+        SERIAL id_hecho_analisis PK
+        INT id_departamento FK
+        INT id_municipio FK
+        SMALLINT id_estrato FK
+        SMALLINT zona_vivienda
+        SMALLINT tipo_vivienda
+        SMALLINT tiene_energia_electrica
+    }
+    dataset_unificado {
+        SMALLINT anio PK
+        SMALLINT mes PK
+        DATE fecha_mes
+        INT siv_casos_total
+        INT siv_casos_mujeres
+        INT siv_mujeres_agresor_pareja
+        INT siv_mujeres_agresor_familiar
+        INT siv_mujeres_turno_noche
+        INT siv_mujeres_fallecidas
+        INT api_casos_mujeres
+        INT api_mujeres_incapacidad_grave
+        INT osec_denuncias_vif
+        INT osec_denuncias_sexuales
+        INT ecv_viviendas_bucaramanga
+        NUMERIC ecv_pct_estrato_1_2
+        NUMERIC ecv_pct_estrato_5_6
+        SMALLINT fuentes_con_dato "1 a 3"
+    }
+    vista_comuna_anual {
+        SMALLINT id_comuna
+        SMALLINT numero_comuna
+        VARCHAR nombre_comuna
+        VARCHAR tipo
+        INT anio
+        BIGINT siv_casos_mujeres
+        BIGINT siv_casos_total
+        BIGINT osec_denuncias_vif
+        BIGINT osec_denuncias_sexuales
+        BIGINT osec_meses_con_dato
+    }
+    log_validaciones {
+        SERIAL id_log PK
+        TIMESTAMP fecha_ejecucion
+        VARCHAR suite
+        VARCHAR tabla
+        VARCHAR expectativa
+        VARCHAR columna
+        BOOLEAN exito
+        TEXT valor_observado
+        INT filas_inesperadas
+        NUMERIC porcentaje_inesperado
+        TEXT ejemplos_inesperados
+        TEXT descripcion
+    }
