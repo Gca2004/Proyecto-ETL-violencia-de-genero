@@ -45,7 +45,7 @@
 21. [Equipo de trabajo](#-equipo-de-trabajo)
 22. [Licencia](#-licencia)
 
-> 📄 El **documento técnico** de la segunda entrega está en [`Docs/documento_tecnico.md`](Docs/documento_tecnico.md).
+> 📄 El **documento técnico** de la segunda entrega está en [`Docs/Documento_tecnico.md`](Docs/Documento_tecnico.md).
 
 ---
 
