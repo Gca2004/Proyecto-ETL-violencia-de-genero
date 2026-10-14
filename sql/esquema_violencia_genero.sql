@@ -3,6 +3,12 @@
 -- Violencia de género contra mujeres (Colombia)
 -- Proyecto ETL - ODS 5 (Igualdad de Género)
 -- Jerarquía: pais -> departamento -> municipio
+--
+-- CAMBIO (entrega 2): hechos_violencia.hora_hecho (TIME) fue reemplazada
+-- por hechos_violencia.turno. Ya no se guarda la hora exacta, solo el
+-- turno del día (ver ventanas en el comentario de la columna).
+-- La hora original se conserva en raw_violencia_genero.hora_hecho (TEXT)
+-- para auditoría; ese archivo NO se modifica.
 -- ============================================================
 
 -- ------------------------------------------------------------
@@ -95,9 +101,16 @@ CREATE TABLE hechos_violencia (
     pac_hos             BOOLEAN,
     sust_vict           BOOLEAN,
     fecha_hecho         DATE,
-    hora_hecho          TIME,
-    fuente              VARCHAR(30) NOT NULL DEFAULT 'SIVIGILA_Colombia'
+    -- Turno del día en que ocurrió el hecho (hora local, 24 h):
+    --   MAÑANA       07:00 <= hora < 12:00
+    --   TARDE        12:00 <= hora < 22:00
+    --   NOCHE        22:00 <= hora < 24:00  y  00:00 <= hora < 07:00
+    --   NO REPORTADO hora vacía, "Sin información" o no interpretable
+    -- Se calcula en etl/turno.py (calcular_turno).
+    turno               VARCHAR(15) NOT NULL DEFAULT 'NO REPORTADO',
+    fuente              VARCHAR(30) NOT NULL DEFAULT 'SIVIGILA_Colombia',
                         -- 'SIVIGILA_Colombia' o 'Historico_Bucaramanga'
+    CONSTRAINT chk_turno CHECK (turno IN ('MAÑANA', 'TARDE', 'NOCHE', 'NO REPORTADO'))
 );
 
 -- ------------------------------------------------------------
@@ -106,6 +119,7 @@ CREATE TABLE hechos_violencia (
 CREATE INDEX idx_hechos_municipio  ON hechos_violencia(id_municipio);
 CREATE INDEX idx_hechos_tiempo     ON hechos_violencia(id_tiempo);
 CREATE INDEX idx_hechos_fuente     ON hechos_violencia(fuente);
+CREATE INDEX idx_hechos_turno      ON hechos_violencia(turno);
 CREATE INDEX idx_departamento_pais ON dim_departamento(id_pais);
 CREATE INDEX idx_municipio_depto   ON dim_municipio(id_departamento);
 CREATE INDEX idx_tiempo_year       ON dim_tiempo(year);
@@ -123,3 +137,12 @@ CREATE INDEX idx_tiempo_year       ON dim_tiempo(year);
 -- FROM hechos_violencia h
 -- JOIN dim_municipio m ON h.id_municipio = m.id_municipio
 -- WHERE m.nombre_municipio = 'Bucaramanga';
+
+-- ------------------------------------------------------------
+-- EJEMPLO: casos por turno
+-- ------------------------------------------------------------
+-- SELECT turno, COUNT(*) AS casos
+-- FROM hechos_violencia
+-- GROUP BY turno
+-- ORDER BY CASE turno WHEN 'MAÑANA' THEN 1 WHEN 'TARDE' THEN 2
+--                     WHEN 'NOCHE' THEN 3 ELSE 4 END;

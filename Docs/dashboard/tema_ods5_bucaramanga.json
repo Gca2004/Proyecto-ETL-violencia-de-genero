@@ -1,0 +1,18 @@
+{
+  "name": "ODS5 Violencia Bucaramanga",
+  "dataColors": ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6"],
+  "background": "#FFFFFF",
+  "foreground": "#252423",
+  "tableAccent": "#2a78d6",
+  "good": "#008300",
+  "neutral": "#eda100",
+  "bad": "#d13438",
+  "minimum": "#cde2fb",
+  "center": "#86b6ef",
+  "maximum": "#1c5cab",
+  "textClasses": {
+    "title": { "fontFace": "Segoe UI Semibold", "fontSize": 13, "color": "#252423" },
+    "label": { "fontFace": "Segoe UI", "fontSize": 10, "color": "#52514e" },
+    "callout": { "fontFace": "Segoe UI Semibold", "fontSize": 26, "color": "#252423" }
+  }
+}

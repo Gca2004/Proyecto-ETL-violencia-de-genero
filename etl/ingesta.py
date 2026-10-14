@@ -1,43 +1,52 @@
 """
-Módulo de Ingesta
+etl/ingesta.py  (segunda entrega)
+Extracción de las 4 fuentes y carga a sus tablas CRUDAS en PostgreSQL.
 
-Incluye variables sociodemográficas clave (Escolaridad, Estado Civil, Orientación Sexual)
+    Fuente 1  CSV SIVIGILA (entrega 1)      -> raw_violencia_genero
+    Fuente 2  API Medicina Legal            -> raw_api_violencia
+    Fuente 3  CSV vivienda ECV 2024 (DANE)  -> raw_vivienda
+    Fuente 4  Scraping OSEC Bucaramanga     -> raw_scraping_boletines + raw_scraping_comunas
+
+Reglas
+------
+* La capa cruda guarda los datos TAL CUAL llegan (todo como texto): no se
+  limpia, no se filtra por sexo ni por estrato. Eso lo hace la transformación.
+* Cada carga es IDEMPOTENTE: si se ejecuta dos veces el mismo día no duplica
+  datos. Las fuentes 1, 2 y 3 se reemplazan completas (borrar + insertar en UNA
+  transacción); la fuente 4 es incremental (solo agrega boletines nuevos).
+* Cada fuente tiene su propia función "tarea_*". Esas son las funciones que
+  llamará Airflow, una por cada tarea del DAG.
+
+Requisito: haber ejecutado sql/raw_violencia_genero.sql y sql/raw_fuentes_entrega2.sql
+
+Uso:
+    python etl/ingesta.py                      (las 4 fuentes)
+    python etl/ingesta.py --fuente api         (solo una: sivigila | api | vivienda | scraping)
 """
 
+import argparse
+import logging
 import os
 import time
-import logging
-import requests
-import pandas as pd
-from bs4 import BeautifulSoup
-from sqlalchemy import create_engine, text
-from dotenv import load_dotenv
+from pathlib import Path
 
-# Configuración de Logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - [%(levelname)s] - %(name)s - %(message)s'
-)
+import pandas as pd
+import requests
+from dotenv import load_dotenv
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import URL
+
+try:  # Airflow / python -m etl.ingesta (raíz del proyecto en el PYTHONPATH)
+    from etl.extraer_scraping import extraer_scraping_osec
+except ImportError:  # python etl/ingesta.py
+    from extraer_scraping import extraer_scraping_osec
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - %(name)s - %(message)s")
 logger = logging.getLogger("ETL_Ingesta")
 
-load_dotenv()
-
-# CONFIGURACIÓN GENERAL - ENLACES DE FUENTES
-
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CSV_PATH = os.path.join(BASE_DIR, "data", "bucaramanga_violencia.csv.csv")
-if not os.path.exists(CSV_PATH):
-    CSV_PATH = os.path.join(BASE_DIR, "data", "bucaramanga_violencia.csv")
-
-FUENTE_CSV = "Historico_Bucaramanga"
-
-# Fuente 2: API REST Datos.gov se usa Socrata JSON API
-URL_API_DATOS_GOV = "https://www.datos.gov.co/resource/ers2-kerr.json?$limit=5000"
-
-# Fuente 3: Web Scraping Metadatos del Geoportal DANE / IPM
-URL_SCRAPING = "https://geoportal.dane.gov.co/geovisores/sociedad/estadisticas-integradas/?cod_dimension=5&cod_subdimension=88"
-
-SOLO_INSPECCIONAR = False
+RAIZ_PROYECTO = Path(__file__).resolve().parent.parent
+CARPETA_DATOS = RAIZ_PROYECTO / "data"
+load_dotenv(RAIZ_PROYECTO / ".env")
 
 DB_USER = os.getenv("DB_USER", "postgres")
 DB_PASSWORD = os.getenv("DB_PASSWORD")
@@ -45,239 +54,252 @@ DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_PORT = os.getenv("DB_PORT", "5432")
 DB_NAME = os.getenv("DB_NAME", "violencia_genero_db")
 
-# Mapeo Fuente 1: Nombre original CSV -> Nombre columna en raw_violencia_genero
-COLUMN_MAP = {
-    "Orden": "orden",
-    "Departamento": "departamento",
-    "Municipio": "municipio",
-    "semana": "semana",
-    "año": "year",
-    "Grupo edad": "grupo_edad",
-    "Ciclo de vida": "ciclo_vida",
-    "sexo_": "sexo",
-    "area_": "area",
-    "Barrio": "barrio",
-    "Comuna": "comuna",
-    "Tipo de Seguridad Social": "tipo_seguridad_social",
-    "pac_hos_": "pac_hos",
-    "con_fin_": "con_fin",
-    "version": "version",
-    "naturaleza": "naturaleza",
-    "def_naturaleza": "def_naturaleza",
-    "actividad": "actividad",
-    "nom_actividad": "nom_actividad",
-    "edad_agre": "edad_agre",
-    "sexo_agre": "sexo_agre",
-    "parentezco_vict": "parentezco_vict",
-    "sust_vict": "sust_vict",
-    "fec_hecho": "fec_hecho",
-    "hora_hecho": "hora_hecho",
-    "escenario": "escenario",
-    "zona_conf": "zona_conf",
-    "nom_eve": "nom_eve",
-    "nom_upgd": "nom_upgd",
-    "ndep_resi": "ndep_resi",
-    "nmun_resi": "nmun_resi",
-    "MES": "mes",
+# ---------------------------------------------------------------------------
+# Configuración de las fuentes
+# ---------------------------------------------------------------------------
+# Fuente 1: CSV de la primera entrega
+NOMBRES_CSV_SIVIGILA = ["bucaramanga_violencia.csv.csv", "bucaramanga_violencia.csv"]
+FUENTE_SIVIGILA = "Historico_Bucaramanga"
+COLUMN_MAP_SIVIGILA = {
+    "Orden": "orden", "Departamento": "departamento", "Municipio": "municipio", "semana": "semana",
+    "año": "year", "Grupo edad": "grupo_edad", "Ciclo de vida": "ciclo_vida", "sexo_": "sexo",
+    "area_": "area", "Barrio": "barrio", "Comuna": "comuna", "Tipo de Seguridad Social": "tipo_seguridad_social",
+    "pac_hos_": "pac_hos", "con_fin_": "con_fin", "version": "version", "naturaleza": "naturaleza",
+    "def_naturaleza": "def_naturaleza", "actividad": "actividad", "nom_actividad": "nom_actividad",
+    "edad_agre": "edad_agre", "sexo_agre": "sexo_agre", "parentezco_vict": "parentezco_vict",
+    "sust_vict": "sust_vict", "fec_hecho": "fec_hecho", "hora_hecho": "hora_hecho", "escenario": "escenario",
+    "zona_conf": "zona_conf", "nom_eve": "nom_eve", "nom_upgd": "nom_upgd", "ndep_resi": "ndep_resi",
+    "nmun_resi": "nmun_resi", "MES": "mes",
 }
 
-# Mapeo Fuente 2: Atributos JSON Socrata -> Nombres homólogos en raw_violencia_genero
-API_DATOS_GOV_MAP = {
-    "a_o_del_hecho": "year",
-    "departamento_del_hecho_dane": "departamento",
-    "municipio_del_hecho_dane": "municipio",
-    "mes_del_hecho": "mes",
-    "sexo_de_la_victima": "sexo",
-    "ciclo_vital": "ciclo_vida",
-    "grupo_de_edad_quinquenal": "grupo_edad",
-    "escolaridad": "tipo_seguridad_social",  # Se homologa al campo sociodemográfico de perfil en staging
-    "estado_civil": "nom_actividad",
-    "escenario_del_hecho": "escenario",
-    "zona_del_hecho": "zona_conf",
-    "mecanismo_causal_de_la_lesion_no_fatal": "naturaleza",
-    "sexo_del_agresor": "sexo_agre",
-    "presunto_agresor_detallado": "parentezco_vict",
-    "rango_de_hora_del_hecho_x_3_horas": "hora_hecho",
-    "codigo_dane_municipio": "nmun_resi"
-}
+# Fuente 2: API Medicina Legal (datos.gov.co)
+URL_API = "https://www.datos.gov.co/resource/ers2-kerr.json"
+CODIGO_BUCARAMANGA = "68001"
+LIMITE_API = 50000          # máximo por consulta / tamaño de la muestra nacional
+TAMANO_PAGINA = 10000
+FUENTE_API = "API_Medicina_Legal"
+COLUMNAS_API = [            # las 36 columnas del conjunto ers2-kerr (mismo orden que la tabla raw)
+    "id", "a_o_del_hecho", "sexo_de_la_victima", "grupo_de_edad_quinquenal", "grupo_mayor_menor_de_edad",
+    "grupo_de_edad_judicial", "ciclo_vital", "pais_de_nacimiento", "escolaridad", "estado_civil",
+    "tipo_de_discapacidad", "pertenencia_etnica", "orientacion_sexual", "identidad_de_genero", "transgenero",
+    "pertenencia_grupal", "mes_del_hecho", "dia_del_hecho", "rango_de_hora_del_hecho_x_3_horas",
+    "codigo_dane_municipio", "municipio_del_hecho_dane", "departamento_del_hecho_dane",
+    "codigo_dane_departamento", "localidad_del_hecho", "zona_del_hecho", "escenario_del_hecho",
+    "actividad_durante_el_hecho", "circunstancia_del_hecho_detallada", "contexto_del_hecho",
+    "mecanismo_causal_de_la_lesion_no_fatal", "diagnostico_topografico_de_la_lesion_no_fatal",
+    "sexo_del_agresor", "presunto_agresor_detallado", "factor_desencadenante_de_la_agresion",
+    "dias_de_incapacidad_medicolegal", "pueblo_indigena",
+]
+
+# Fuente 3: CSV de vivienda
+COLUMNAS_VIVIENDA = ["P1_DEPARTAMENTO", "P1_MUNICIPIO", "CLASE", "P1070", "P8520S1", "P8520S1A1"]
+FUENTE_VIVIENDA = "ECV_2024_DANE"
+
+HEADERS = {"User-Agent": "Mozilla/5.0 (proyecto academico ETL)"}
 
 
+# ---------------------------------------------------------------------------
+# Utilidades
+# ---------------------------------------------------------------------------
 def obtener_motor_db():
-    connection_url = f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-    return create_engine(connection_url)
+    if not DB_PASSWORD:
+        raise RuntimeError(f"Falta DB_PASSWORD en {RAIZ_PROYECTO / '.env'}")
+    url = URL.create("postgresql+psycopg2", username=DB_USER, password=DB_PASSWORD,
+                     host=DB_HOST, port=int(DB_PORT), database=DB_NAME)
+    return create_engine(url)
 
 
-# FUNCIONES DE EXTRACCIÓN MODULARES
+def buscar_archivo(nombres=None, contiene=None) -> Path:
+    """Busca un CSV en data/ por nombre exacto o por una palabra (sin importar mayúsculas)."""
+    for p in sorted(CARPETA_DATOS.rglob("*")):
+        if not p.is_file() or "eda_cache" in p.parts:
+            continue
+        if nombres and p.name.lower() in [n.lower() for n in nombres]:
+            return p
+        if contiene and contiene in p.name.lower() and p.suffix.lower() == ".csv":
+            return p
+    raise FileNotFoundError(f"No se encontró en {CARPETA_DATOS} el archivo {nombres or ('*' + contiene + '*.csv')}")
 
-def extraer_csv_principal(filepath: str = CSV_PATH, fuente: str = FUENTE_CSV) -> pd.DataFrame:
-    """Lectura del CSV principal local de Bucaramanga."""
-    logger.info(f"Leyendo CSV local desde: {filepath}")
-    if not os.path.exists(filepath):
-        raise FileNotFoundError(f"El archivo CSV no existe en la ruta: {filepath}")
 
-    df = pd.read_csv(
-        filepath,
-        sep=",",
-        encoding="utf-8-sig",
-        dtype=str,
-        keep_default_na=False,
-        na_values=[""],
-    )
-    df = df.where(pd.notnull(df), None)
+def pedir(url, params=None, intentos=3, espera=5, timeout=120):
+    """GET con reintentos."""
+    ultimo_error = None
+    for i in range(1, intentos + 1):
+        try:
+            r = requests.get(url, params=params, headers=HEADERS, timeout=timeout)
+            r.raise_for_status()
+            return r
+        except requests.RequestException as e:
+            ultimo_error = e
+            logger.warning("Intento %d/%d falló (%s): %s", i, intentos, url, e)
+            if i < intentos:
+                time.sleep(espera)
+    raise ultimo_error
 
-    logger.info(f"Columnas encontradas en el CSV ({len(df)} filas): {df.columns.tolist()}")
 
-    faltantes = [c for c in COLUMN_MAP if c not in df.columns]
+def reemplazar_en_raw(df: pd.DataFrame, tabla: str, condicion: str, parametros: dict) -> int:
+    """
+    Borra las filas de 'tabla' que cumplen 'condicion' e inserta df, todo en UNA
+    transacción: si algo falla, la tabla queda como estaba (no se pierden datos).
+    """
+    if df is None or df.empty:
+        raise ValueError(f"No llegaron datos para '{tabla}'. No se borra nada.")
+    engine = obtener_motor_db()
+    try:
+        with engine.begin() as conn:
+            borradas = conn.execute(text(f"DELETE FROM {tabla} WHERE {condicion}"), parametros).rowcount
+            df.to_sql(tabla, conn, if_exists="append", index=False, method="multi", chunksize=500)
+            total = conn.execute(text(f"SELECT COUNT(*) FROM {tabla} WHERE {condicion}"), parametros).scalar()
+        logger.info("'%s': %d filas anteriores reemplazadas por %d nuevas.", tabla, borradas, total)
+        if total != len(df):
+            raise RuntimeError(f"'{tabla}': se insertaron {len(df)} filas pero hay {total}")
+        return int(total)
+    finally:
+        engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# Fuente 1: CSV SIVIGILA (primera entrega)
+# ---------------------------------------------------------------------------
+def extraer_sivigila() -> pd.DataFrame:
+    ruta = buscar_archivo(nombres=NOMBRES_CSV_SIVIGILA)
+    logger.info("Leyendo CSV SIVIGILA: %s", ruta.name)
+    df = pd.read_csv(ruta, sep=",", encoding="utf-8-sig", dtype=str, keep_default_na=False, na_values=[""])
+    faltantes = [c for c in COLUMN_MAP_SIVIGILA if c not in df.columns]
     if faltantes:
-        raise ValueError(f"Columnas faltantes en el CSV: {faltantes}")
-
-    df = df.rename(columns=COLUMN_MAP)
-    df = df[list(COLUMN_MAP.values())]
-    df["fuente"] = fuente
+        raise ValueError(f"Columnas faltantes en el CSV SIVIGILA: {faltantes}")
+    df = df.rename(columns=COLUMN_MAP_SIVIGILA)[list(COLUMN_MAP_SIVIGILA.values())]
+    df = df.astype(object).where(df.notna(), None)
+    df["fuente"] = FUENTE_SIVIGILA
+    logger.info("SIVIGILA: %d filas leídas.", len(df))
     return df
 
 
-def extraer_api_datos_gov(url: str = URL_API_DATOS_GOV, retries: int = 3, delay: int = 2) -> pd.DataFrame:
-    """
-    Petición HTTP a la API REST de Socrata (Datos Abiertos Colombia).
-    Conserva la columna de "escolaridad" y otros factores sociodemográficos.
-    """
-    logger.info("Iniciando extracción desde API REST de Datos Abiertos")
-    headers = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64)"}
-    
-    for intento in range(1, retries + 1):
-        try:
-            response = requests.get(url, headers=headers, timeout=30)
-            response.raise_for_status()
-            data_json = response.json()
-            
-            if not data_json:
-                logger.warning("La respuesta de la API Datos Abiertos está vacía.")
-                return pd.DataFrame()
-            
-            df_api = pd.DataFrame(data_json)
-            
-            # Renombrar columnas homólogas incluyendo escolaridad
-            df_api = df_api.rename(columns=API_DATOS_GOV_MAP)
-            
-            # Asignar la fuente
-            df_api["fuente"] = "API_Datos_Gov_Socrata"
-            
-            #Filtrar únicamente sobre las columnas válidas aceptadas por la tabla de staging
-            columnas_permitidas = list(COLUMN_MAP.values()) + ["fuente"]
-            cols_existentes = [c for c in columnas_permitidas if c in df_api.columns]
-            df_api = df_api[cols_existentes].copy()
-            
-            logger.info(f"API Datos Abiertos extraída exitosamente. Registros procesados: {len(df_api)}")
-            return df_api
-            
-        except Exception as e:
-            logger.warning(f"Intento {intento}/{retries} falló para API Datos Abiertos: {str(e)}")
-            if intento < retries:
-                time.sleep(delay)
-            else:
-                logger.error("No se pudo conectar a la API de Datos Abiertos.")
-                return pd.DataFrame()
+def tarea_sivigila() -> int:
+    df = extraer_sivigila()
+    return reemplazar_en_raw(df, "raw_violencia_genero", "fuente = :f", {"f": FUENTE_SIVIGILA})
 
 
-def extraer_scraping_geoportal_dane(url: str = URL_SCRAPING) -> pd.DataFrame:
-    """
-    Web Scraping - Inspección HTML sobre el Geoportal DANE.
-    Realiza una extracción de metadatos del visor de Pobreza y IPM
-    optimizando el timeout.
-    """
-    logger.info(f"Iniciando Web Scraping - Inspección en Geoportal DANE: {url}")
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
+# ---------------------------------------------------------------------------
+# Fuente 2: API Medicina Legal
+# ---------------------------------------------------------------------------
+def _a_tabla_api(registros: list, alcance: str) -> pd.DataFrame:
+    df = pd.DataFrame(registros)
+    extra = [c for c in df.columns if c not in COLUMNAS_API]
+    if extra:
+        logger.warning("La API trajo columnas nuevas que no están en la tabla raw (se ignoran): %s", extra)
+    df = df.reindex(columns=COLUMNAS_API)          # columnas que no vinieron quedan vacías
+    df = df.astype(object).where(df.notna(), None)
+    df["alcance"] = alcance
+    df["fuente"] = FUENTE_API
+    return df
 
-    metadatos = []
 
-    try:
-        # Petición directa al HTML del Geoportal con timeout corto de 8 segundos
-        response = requests.get(url, headers=headers, timeout=8)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, 'html.parser')
+def extraer_api_bucaramanga() -> pd.DataFrame:
+    """Todos los casos de Bucaramanga (filtro desde la consulta SoQL)."""
+    params = {"$where": f"codigo_dane_municipio='{CODIGO_BUCARAMANGA}'", "$limit": LIMITE_API, "$order": "id"}
+    registros = pedir(URL_API, params=params).json()
+    if len(registros) >= LIMITE_API:
+        logger.warning("Bucaramanga llegó al límite de %d registros: puede haber más casos.", LIMITE_API)
+    logger.info("API Bucaramanga: %d registros.", len(registros))
+    return _a_tabla_api(registros, "BUCARAMANGA")
 
-        title_tag = soup.find("title")
-        titulo = title_tag.text.strip() if title_tag else "Geoportal DANE - Estadísticas Integradas IPM"
 
-        meta_desc = soup.find("meta", {"name": "description"})
-        descripcion = meta_desc["content"].strip() if meta_desc and meta_desc.get("content") else "Indicadores de Pobreza y Condiciones de Vida"
+def extraer_api_muestra_nacional() -> pd.DataFrame:
+    """50.000 registros del país, años más recientes, en páginas de 10.000."""
+    registros = []
+    for offset in range(0, LIMITE_API, TAMANO_PAGINA):
+        params = {"$limit": TAMANO_PAGINA, "$offset": offset, "$order": "a_o_del_hecho DESC, id"}
+        lote = pedir(URL_API, params=params).json()
+        logger.info("API nacional: página con offset %d -> %d registros", offset, len(lote))
+        if not lote:
+            break
+        registros.extend(lote)
+    return _a_tabla_api(registros, "MUESTRA_NACIONAL")
 
-        metadatos.append({
-            "departamento": "COLOMBIA",
-            "municipio": "NACIONAL",
-            "nmun_resi": "00000",
-            "naturaleza": f"Metadato: {titulo[:40]}",
-            "nom_actividad": descripcion[:100],
-            "fuente": "Scraping_Geoportal_DANE"
-        })
 
-    except Exception as e:
-        logger.warning(f"Respuesta lenta o inaccesible desde el Geoportal DANE ({str(e)}). Generando entrada de metadatos de respaldo...")
-        metadatos.append({
-            "departamento": "COLOMBIA",
-            "municipio": "NACIONAL",
-            "nmun_resi": "00000",
-            "naturaleza": "Geoportal DANE - Pobreza e IPM",
-            "nom_actividad": "Estadísticas Integradas de Pobreza Multidimensional 2025",
-            "fuente": "Scraping_Geoportal_DANE"
-        })
+def tarea_api(incluir_muestra_nacional: bool = True) -> int:
+    total = reemplazar_en_raw(extraer_api_bucaramanga(), "raw_api_violencia", "alcance = :a", {"a": "BUCARAMANGA"})
+    if incluir_muestra_nacional:
+        total += reemplazar_en_raw(extraer_api_muestra_nacional(), "raw_api_violencia", "alcance = :a",
+                                   {"a": "MUESTRA_NACIONAL"})
+    return total
 
-    df_dane = pd.DataFrame(metadatos)
-    columnas_permitidas = list(COLUMN_MAP.values()) + ["fuente"]
-    cols_existentes = [c for c in columnas_permitidas if c in df_dane.columns]
-    
-    logger.info(f"Geoportal DANE extraído exitosamente. Registros procesados: {len(df_dane)}")
-    return df_dane[cols_existentes]
 
-# CARGA A POSTGRESQL
+# ---------------------------------------------------------------------------
+# Fuente 3: CSV vivienda ECV 2024
+# ---------------------------------------------------------------------------
+def extraer_vivienda() -> pd.DataFrame:
+    ruta = buscar_archivo(contiene="vivienda")
+    logger.info("Leyendo CSV de vivienda: %s", ruta.name)
+    df = pd.read_csv(ruta, sep=";", dtype=str, encoding="utf-8-sig", usecols=COLUMNAS_VIVIENDA)[COLUMNAS_VIVIENDA]
+    df.columns = [c.lower() for c in df.columns]   # PostgreSQL usa minúsculas
+    df = df.astype(object).where(df.notna(), None)
+    df["archivo"] = ruta.name
+    df["fuente"] = FUENTE_VIVIENDA
+    logger.info("Vivienda: %d filas leídas (archivo nacional).", len(df))
+    return df
 
-def cargar_a_raw_db(df: pd.DataFrame, fuente: str, tabla_destino: str = "raw_violencia_genero"):
-    if df is None or df.empty:
-        logger.warning(f"DataFrame vacío para la fuente '{fuente}'. Omitiendo carga.")
-        return
 
+def tarea_vivienda() -> int:
+    return reemplazar_en_raw(extraer_vivienda(), "raw_vivienda", "fuente = :f", {"f": FUENTE_VIVIENDA})
+
+
+# ---------------------------------------------------------------------------
+# Fuente 4: Scraping OSEC (incremental)
+# ---------------------------------------------------------------------------
+def tarea_scraping() -> int:
     engine = obtener_motor_db()
-
     try:
         with engine.connect() as conn:
-            query = text(f"SELECT COUNT(*) FROM {tabla_destino} WHERE fuente = :fuente_param")
-            result = conn.execute(query, {"fuente_param": fuente}).fetchone()
-            registros_existentes = result[0] if result else 0
+            ya_cargados = {r[0] for r in conn.execute(text("SELECT periodo FROM raw_scraping_boletines"))}
+        logger.info("Boletines que ya están en la base de datos: %d", len(ya_cargados))
 
-            if registros_existentes > 0:
-                logger.info(f"La fuente '{fuente}' ya contiene {registros_existentes} filas en '{tabla_destino}'. Anexando datos...")
-    except Exception:
-        logger.info(f"Creando o verificando tabla '{tabla_destino}'...")
+        boletines, comunas = extraer_scraping_osec(periodos_ya_cargados=ya_cargados)
 
-    df.to_sql(tabla_destino, engine, if_exists="append", index=False)
-    engine.dispose()
-    logger.info(f"Carga exitosa: {len(df)} filas insertadas en '{tabla_destino}' (fuente='{fuente}').")
+        ok = boletines[boletines["estado_extraccion"] == "OK"]
+        fallidos = boletines[boletines["estado_extraccion"] != "OK"]
+        if len(fallidos):
+            # No se guardan: así el próximo día se vuelven a intentar
+            logger.warning("Boletines con problemas (se reintentarán): %s",
+                           fallidos[["periodo", "estado_extraccion"]].to_dict("records"))
+        if ok.empty:
+            logger.info("No hay boletines nuevos para cargar.")
+            return 0
+
+        comunas = comunas[comunas["periodo"].isin(ok["periodo"])].astype(str)
+        cols_bol = ["periodo", "nombre_boletin", "url_pdf", "estado_extraccion", "fecha_extraccion", "fuente"]
+        with engine.begin() as conn:   # boletines y comunas en la misma transacción
+            ok[cols_bol].to_sql("raw_scraping_boletines", conn, if_exists="append", index=False, method="multi")
+            comunas.to_sql("raw_scraping_comunas", conn, if_exists="append", index=False,
+                           method="multi", chunksize=500)
+        logger.info("Scraping: %d boletines nuevos y %d filas por comuna cargadas.", len(ok), len(comunas))
+        return int(len(comunas))
+    finally:
+        engine.dispose()
 
 
-#EJECUCIÓN PRINCIPAL
+# ---------------------------------------------------------------------------
+# Ejecución manual
+# ---------------------------------------------------------------------------
+TAREAS = {
+    "sivigila": tarea_sivigila,
+    "api": tarea_api,
+    "vivienda": tarea_vivienda,
+    "scraping": tarea_scraping,
+}
 
 if __name__ == "__main__":
-    logger.info("INICIANDO FASE DE INGESTA DE LAS 3 FUENTES DE DATOS")
+    parser = argparse.ArgumentParser(description="Ingesta de las 4 fuentes a las tablas crudas")
+    parser.add_argument("--fuente", choices=["todas", *TAREAS], default="todas")
+    args = parser.parse_args()
 
-    # Fuente Principal (CSV Bucaramanga)
-    df_csv = extraer_csv_principal(CSV_PATH, FUENTE_CSV)
-    
-    if SOLO_INSPECCIONAR:
-        print("\nSOLO_INSPECCIONAR=True → No se guardó nada en la BD.")
-        print(df_csv.head(3))
-        raise SystemExit(0)
+    elegidas = TAREAS if args.fuente == "todas" else {args.fuente: TAREAS[args.fuente]}
+    resumen = {}
+    for nombre, tarea in elegidas.items():
+        logger.info("========== Ingesta: %s ==========", nombre.upper())
+        resumen[nombre] = tarea()
 
-    cargar_a_raw_db(df_csv, FUENTE_CSV)
-
-    # Fuente Secundaria (API REST Datos.gov Socrata JSON)
-    df_api_gov = extraer_api_datos_gov(URL_API_DATOS_GOV)
-    cargar_a_raw_db(df_api_gov, "API_Datos_Gov_Socrata")
-
-    #Fuente Terciaria (Web Scraping Geoportal DANE)
-    df_scraping_dane = extraer_scraping_geoportal_dane(URL_SCRAPING)
-    cargar_a_raw_db(df_scraping_dane, "Scraping_Geoportal_DANE")
-
-    logger.info("PROCESO DE INGESTA COMPLETADO CORRECTAMENTE")
+    print("\nRESUMEN DE LA INGESTA (filas en la tabla cruda de cada fuente):")
+    for nombre, n in resumen.items():
+        print(f"  {nombre:10s} {n:>8,}")

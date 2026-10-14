@@ -1,22 +1,60 @@
 """
-Módulo de Transformación y Enrutado Dimensional
+etl/transformacion.py
+Transformación y carga del modelo dimensional (estrella) de violencia de género.
+
+Lee   : raw_violencia_genero            (tabla cruda cargada por la ingesta)
+Escribe: dim_pais, dim_departamento, dim_municipio, dim_tiempo, dim_victima,
+         dim_agresor, dim_tipo_violencia, hechos_violencia   (sql/esquema.sql)
+
+Reglas clave
+------------
+* El esquema se crea UNA vez con sql/esquema.sql. Este módulo NO borra ni
+  recrea tablas: vacía (TRUNCATE) y carga (append) dentro de UNA transacción.
+  Si algo falla (CHECK, FK, etc.) se hace ROLLBACK y la BD queda como estaba.
+* Textos: MAYÚSCULAS y sin tildes; desconocido = 'NO REPORTADO'.
+  El turno NO pasa por normalizar_cadena (conserva 'MAÑANA').
+* Nunca se "rellenan" claves foráneas: si un merge falla, se lanza error.
+
+CAMBIO (entrega 2): hechos_violencia guarda además el sexo de la víctima
+(sexo_victima) y la comuna (id_comuna -> dim_comuna). La comuna se homologa
+con etl/homologacion.py para poder comparar SIVIGILA con los boletines OSEC.
+Requiere haber ejecutado sql/esquema_entrega2.sql.
+
+Uso:
+    python etl/transformacion.py          (desde la raíz del proyecto)
+    python -m etl.transformacion          (o desde Airflow con la raíz en PYTHONPATH)
 """
 
-import os
 import logging
+import os
 import unicodedata
+import warnings
+from pathlib import Path
+
 import pandas as pd
-import numpy as np
-from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import URL
+
+try:  # python -m etl.transformacion  /  Airflow con la raíz del proyecto en PYTHONPATH
+    from etl.turno import NO_REPORTADO, TURNOS_VALIDOS, calcular_turno
+except ImportError:  # python etl/transformacion.py
+    from turno import NO_REPORTADO, TURNOS_VALIDOS, calcular_turno
+
+try:
+    from etl.homologacion import comuna_a_id, sexo as sexo_homologado
+except ImportError:
+    from homologacion import comuna_a_id, sexo as sexo_homologado
 
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - [%(levelname)s] - %(name)s - %(message)s'
+    format="%(asctime)s - [%(levelname)s] - %(name)s - %(message)s",
 )
 logger = logging.getLogger("ETL_Transformacion")
 
-load_dotenv()
+RAIZ_PROYECTO = Path(__file__).resolve().parent.parent
+RUTA_ENV = RAIZ_PROYECTO / ".env"
+load_dotenv(RUTA_ENV)  # busca el .env en la raíz del proyecto, sin depender de dónde ejecutes
 
 DB_USER = os.getenv("DB_USER", "postgres")
 DB_PASSWORD = os.getenv("DB_PASSWORD")
@@ -24,184 +62,373 @@ DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_PORT = os.getenv("DB_PORT", "5432")
 DB_NAME = os.getenv("DB_NAME", "violencia_genero_db")
 
+TABLA_RAW = "raw_violencia_genero"
+FUENTE_POR_DEFECTO = "SIVIGILA_Colombia"
 
+# Orden de carga = orden de dependencias de las llaves foráneas
+ORDEN_CARGA = [
+    "dim_pais",
+    "dim_departamento",
+    "dim_municipio",
+    "dim_tiempo",
+    "dim_victima",
+    "dim_agresor",
+    "dim_tipo_violencia",
+    "hechos_violencia",
+]
+# Tablas cuyo id se inserta explícito -> hay que reajustar su secuencia SERIAL
+SECUENCIAS = {
+    "dim_pais": "id_pais",
+    "dim_departamento": "id_departamento",
+    "dim_municipio": "id_municipio",
+    "dim_tiempo": "id_tiempo",
+    "dim_victima": "id_victima",
+    "dim_agresor": "id_agresor",
+    "dim_tipo_violencia": "id_tipo_violencia",
+}
+
+
+# ----------------------------------------------------------------------------
+# Conexión
+# ----------------------------------------------------------------------------
 def obtener_motor_db():
-    connection_url = f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-    return create_engine(connection_url)
+    if not DB_PASSWORD:
+        raise RuntimeError(
+            f"Falta DB_PASSWORD. Se buscó en: {RUTA_ENV} "
+            f"(existe: {RUTA_ENV.exists()}). Crea esa línea: DB_PASSWORD=tu_clave"
+        )
+    url = URL.create(  # escapa bien contraseñas con @ : / etc.
+        "postgresql+psycopg2",
+        username=DB_USER,
+        password=DB_PASSWORD,
+        host=DB_HOST,
+        port=int(DB_PORT),
+        database=DB_NAME,
+    )
+    return create_engine(url)
 
 
+# ----------------------------------------------------------------------------
+# Limpieza de valores
+# ----------------------------------------------------------------------------
 def normalizar_cadena(texto) -> str:
-    if pd.isna(texto) or texto is None:
-        return "NO REPORTADO"
-    val_str = str(texto).strip().upper()
-    val_norm = unicodedata.normalize('NFKD', val_str).encode('ASCII', 'ignore').decode('utf-8')
-    return val_norm if val_norm != "" else "NO REPORTADO"
+    """MAYÚSCULAS, sin tildes, sin espacios sobrantes. Vacío/nulo -> 'NO REPORTADO'."""
+    if texto is None or pd.isna(texto):
+        return NO_REPORTADO
+    val = unicodedata.normalize("NFKD", str(texto).strip().upper())
+    val = val.encode("ASCII", "ignore").decode("utf-8")
+    val = " ".join(val.split())
+    return val if val else NO_REPORTADO
 
 
-def calcular_turno(hora_raw) -> str:
-    """1. Derivación de hora a turno (Mañana, Tarde, Noche, Madrugada)."""
-    if pd.isna(hora_raw) or hora_raw is None:
-        return "NO REPORTADO"
-    
-    val = str(hora_raw).strip().lower()
-    
-    if '18:' in val or '19:' in val or '20:' in val or '21:' in val or '22:' in val or '23:' in val or 'noche' in val:
-        return "NOCHE"
-    elif '06:' in val or '07:' in val or '08:' in val or '09:' in val or '10:' in val or '11:' in val or 'mañana' in val:
-        return "MAÑANA"
-    elif '12:' in val or '13:' in val or '14:' in val or '15:' in val or '16:' in val or '17:' in val or 'tarde' in val:
-        return "TARDE"
-    elif '00:' in val or '01:' in val or '02:' in val or '03:' in val or '04:' in val or '05:' in val or 'madrugada' in val:
-        return "MADRUGADA"
-    
-    try:
-        hora_int = int(val.split(':')[0])
-        if 0 <= hora_int < 6:
-            return "MADRUGADA"
-        elif 6 <= hora_int < 12:
-            return "MAÑANA"
-        elif 12 <= hora_int < 18:
-            return "TARDE"
-        elif 18 <= hora_int <= 23:
-            return "NOCHE"
-    except Exception:
-        pass
-        
-    return "NO REPORTADO"
+def _mapear_unicos(serie: pd.Series, fn) -> pd.Series:
+    """
+    Aplica fn solo a los valores distintos (rápido). Los nulos (None, NaN, NA,
+    NaT) se tratan aparte con fn(None): mezclar None y NaN en un dict hace
+    fallar a Series.map con InvalidIndexError.
+    """
+    nulos = serie.isna()
+    mapa = {v: fn(v) for v in serie[~nulos].unique()}
+    resultado = serie.map(mapa)
+    return resultado.where(~nulos, fn(None))
 
 
+def _texto(serie: pd.Series) -> pd.Series:
+    return _mapear_unicos(serie, normalizar_cadena).astype(object)
+
+
+_VERDADERO = {"1", "SI", "S", "TRUE", "VERDADERO", "YES", "Y"}
+_FALSO = {"2", "NO", "N", "FALSE", "FALSO"}
+
+
+def _a_booleano(valor):
+    """1/SI/True -> True ; 2/NO/False -> False ; cualquier otra cosa -> None."""
+    if valor is None or pd.isna(valor):
+        return None
+    s = normalizar_cadena(valor)
+    if s.endswith(".0"):
+        s = s[:-2]
+    if s in _VERDADERO:
+        return True
+    if s in _FALSO:
+        return False
+    return None
+
+
+def _booleano(serie: pd.Series) -> pd.Series:
+    r = _mapear_unicos(serie, _a_booleano).astype(object)
+    return r.where(r.notna(), None)
+
+
+def _edad(serie: pd.Series) -> pd.Series:
+    """Edad numérica; fuera de 10..99 (lo que acepta el CHECK) -> -1 (= desconocida)."""
+    n = pd.to_numeric(serie, errors="coerce")
+    n = n.where(n.between(10, 99))
+    return n.round().fillna(-1).astype(int)
+
+
+def _parsear_fecha(serie: pd.Series) -> pd.Series:
+    """
+    Acepta aaaa-mm-dd, aaaa/mm/dd (año primero) y dd/mm/aaaa, dd-mm-aaaa
+    (año al final, formato colombiano). Ignora la hora. Lo no interpretable -> NaT.
+    """
+    if pd.api.types.is_datetime64_any_dtype(serie):
+        return serie.dt.tz_localize(None) if serie.dt.tz is not None else serie
+    s = serie.astype("string").str.strip()
+    p = s.str.extract(r"^(\d{1,4})[-/.](\d{1,2})[-/.](\d{1,4})")
+    a, b, c = (pd.to_numeric(p[i], errors="coerce").astype("float64") for i in range(3))
+    anio_primero = p[0].str.len() == 4
+    anio = a.where(anio_primero, c)
+    dia = c.where(anio_primero, a)
+    anio = anio.where(anio.between(1900, 2100))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return pd.to_datetime(
+            pd.DataFrame({"year": anio, "month": b, "day": dia}), errors="coerce"
+        )
+
+
+# ----------------------------------------------------------------------------
+# Construcción de dimensiones
+# ----------------------------------------------------------------------------
+def _dimension(w: pd.DataFrame, claves: list, id_col: str) -> pd.DataFrame:
+    d = w[claves].drop_duplicates().reset_index(drop=True)
+    d.insert(0, id_col, range(1, len(d) + 1))
+    return d
+
+
+def _unir(w: pd.DataFrame, dim: pd.DataFrame, claves: list, id_col: str) -> pd.DataFrame:
+    # validate evita que una dimensión con claves repetidas multiplique las filas
+    return w.merge(dim[claves + [id_col]], on=claves, how="left", validate="many_to_one")
+
+
+# ----------------------------------------------------------------------------
+# Transformación
+# ----------------------------------------------------------------------------
 def ejecutar_transformacion_y_enrutado() -> dict:
-    logger.info("Iniciando proceso de Transformación y Enrutado Dimensional...")
+    logger.info("Iniciando transformación y enrutado dimensional...")
     engine = obtener_motor_db()
-    
-    df_raw = pd.read_sql("SELECT * FROM raw_violencia_genero;", engine)
-    if df_raw.empty:
-        logger.error("La tabla 'raw_violencia_genero' está vacía.")
+    try:
+        raw = pd.read_sql(f"SELECT * FROM {TABLA_RAW}", engine)
+    finally:
+        engine.dispose()
+
+    if raw.empty:
+        logger.error("La tabla '%s' está vacía.", TABLA_RAW)
         return {}
+    n_raw = len(raw)
 
-    df = df_raw.copy()
+    faltantes = []
 
-    # Estandarización de Código DANE
-    if 'nmun_resi' in df.columns:
-        df['codigo_dane_clean'] = df['nmun_resi'].astype(str).str.replace(r'\.0$', '', regex=True).str.zfill(5)
-    else:
-        df['codigo_dane_clean'] = "00000"
+    def col(*nombres):
+        """Primera columna existente de raw; si no hay ninguna, serie de nulos."""
+        for nom in nombres:
+            if nom in raw.columns:
+                return raw[nom]
+        faltantes.append("/".join(nombres))
+        return pd.Series(None, index=raw.index, dtype="object")
 
-    cols_a_limpiar = ['departamento', 'municipio', 'sexo', 'ciclo_vida', 'grupo_edad', 
-                       'tipo_seguridad_social', 'parentezco_vict', 'naturaleza', 'escenario']
-    for col in cols_a_limpiar:
-        if col in df.columns:
-            df[col] = df[col].apply(normalizar_cadena)
-        else:
-            df[col] = "NO REPORTADO"
+    w = pd.DataFrame(index=raw.index)
 
-    if 'fec_hecho' in df.columns and df['fec_hecho'].notnull().any():
-        df['fecha_dt'] = pd.to_datetime(df['fec_hecho'], errors='coerce')
-    else:
-        df['year_clean'] = pd.to_numeric(df['year'], errors='coerce').fillna(2023).astype(int)
-        df['fecha_dt'] = pd.to_datetime(df['year_clean'].astype(str) + '-01-01', errors='coerce')
+    # --- geografía -----------------------------------------------------------
+    w["id_pais"] = 1
+    w["departamento"] = _texto(col("departamento", "ndep_resi"))
+    w["municipio"] = _texto(col("municipio", "nmun_resi"))
+    w["area"] = _texto(col("area"))
 
-    if 'hora_hecho' in df.columns:
-        df['turno'] = df['hora_hecho'].apply(calcular_turno)
-        df.drop(columns=['hora_hecho'], inplace=True, errors='ignore')
-    else:
-        df['turno'] = "NO REPORTADO"
-
-    # Dim_Ubicacion
-    Dim_Ubicacion = df[['codigo_dane_clean', 'departamento', 'municipio']].drop_duplicates().reset_index(drop=True)
-    Dim_Ubicacion['id_ubicacion_sk'] = Dim_Ubicacion.index + 1
-    Dim_Ubicacion.rename(columns={
-        'codigo_dane_clean': 'codigo_dane',
-        'departamento': 'nombre_departamento',
-        'municipio': 'nombre_municipio'
-    }, inplace=True)
-
-    # Dim_Jornada
-    Dim_Jornada = df[['fecha_dt', 'turno']].drop_duplicates().reset_index(drop=True)
-    Dim_Jornada['id_jornada_sk'] = Dim_Jornada.index + 1
-    Dim_Jornada['anio'] = Dim_Jornada['fecha_dt'].dt.year.fillna(2023).astype(int)
-    Dim_Jornada['mes'] = Dim_Jornada['fecha_dt'].dt.month.fillna(1).astype(int)
-    Dim_Jornada['nombre_mes'] = Dim_Jornada['fecha_dt'].dt.month_name().fillna("ENERO")
-    Dim_Jornada['dia'] = Dim_Jornada['fecha_dt'].dt.day.fillna(1).astype(int)
-
-    # Dim_TipoViolencia
-    Dim_TipoViolencia = df[['parentezco_vict', 'naturaleza', 'escenario']].drop_duplicates().reset_index(drop=True)
-    Dim_TipoViolencia['id_tipo_violencia_sk'] = Dim_TipoViolencia.index + 1
-    Dim_TipoViolencia.rename(columns={'parentezco_vict': 'parentesco_agresor'}, inplace=True)
-
-    # Dim_Victima
-    Dim_Victima = df[['sexo', 'ciclo_vida', 'grupo_edad', 'tipo_seguridad_social']].drop_duplicates().reset_index(drop=True)
-    Dim_Victima['id_victima_sk'] = Dim_Victima.index + 1
-    Dim_Victima.rename(columns={'tipo_seguridad_social': 'escolaridad_o_seguridad'}, inplace=True)
-
-    # Fact_Violencia (MERGES UNÍVOCOS POR CLAVES COMPLETAS)
-    fact_df = df.merge(
-        Dim_Ubicacion, 
-        left_on=['codigo_dane_clean', 'departamento', 'municipio'], 
-        right_on=['codigo_dane', 'nombre_departamento', 'nombre_municipio'], 
-        how='left'
+    # --- tiempo --------------------------------------------------------------
+    fecha = _parsear_fecha(col("fecha_hecho", "fec_hecho"))
+    anio_raw = pd.to_numeric(col("year", "anio"), errors="coerce")
+    mes_raw = pd.to_numeric(col("mes"), errors="coerce")
+    sem_raw = pd.to_numeric(col("semana"), errors="coerce")
+    # Si hay fecha se derivan year/mes/semana ISO de ella (consistente entre fuentes);
+    # si no, se usan las columnas crudas y, en último caso, 0 (= desconocido).
+    w["year"] = fecha.dt.year.astype("float64").fillna(anio_raw).fillna(0).astype(int)
+    w["mes"] = fecha.dt.month.astype("float64").fillna(mes_raw).fillna(0).astype(int)
+    w["semana"] = (
+        fecha.dt.isocalendar().week.astype("float64").fillna(sem_raw).fillna(0).astype(int)
     )
-    fact_df = fact_df.merge(
-        Dim_Jornada, 
-        left_on=['fecha_dt', 'turno'], 
-        right_on=['fecha_dt', 'turno'], 
-        how='left'
-    )
-    fact_df = fact_df.merge(
-        Dim_TipoViolencia, 
-        left_on=['parentezco_vict', 'naturaleza', 'escenario'], 
-        right_on=['parentesco_agresor', 'naturaleza', 'escenario'], 
-        how='left'
-    )
-    fact_df = fact_df.merge(
-        Dim_Victima, 
-        left_on=['sexo', 'ciclo_vida', 'grupo_edad', 'tipo_seguridad_social'], 
-        right_on=['sexo', 'ciclo_vida', 'grupo_edad', 'escolaridad_o_seguridad'], 
-        how='left'
-    )
+    w["fecha_hecho"] = fecha.dt.date.where(fecha.notna(), None)
 
-    Fact_Violencia = fact_df[[
-        'id_ubicacion_sk',
-        'id_jornada_sk',
-        'id_tipo_violencia_sk',
-        'id_victima_sk'
-    ]].copy()
+    # --- turno (NO pasa por normalizar_cadena) --------------------------------
+    w["turno"] = _mapear_unicos(col("hora_hecho", "hora"), calcular_turno)
+    invalidos = ~w["turno"].isin(TURNOS_VALIDOS)
+    if invalidos.any():
+        raise ValueError(f"Turnos fuera de {TURNOS_VALIDOS}: {w.loc[invalidos, 'turno'].unique()[:5]}")
 
-    Fact_Violencia['cantidad_casos'] = 1
-    Fact_Violencia.reset_index(drop=True, inplace=True)
-    Fact_Violencia['id_fact_sk'] = Fact_Violencia.index + 1
-    Fact_Violencia.fillna(1, inplace=True)
+    # --- víctima -------------------------------------------------------------
+    w["grupo_edad"] = _texto(col("grupo_edad"))
+    w["ciclo_vida"] = _texto(col("ciclo_vida"))
+    w["tipo_seguridad_social"] = _texto(col("tipo_seguridad_social"))
+    w["actividad"] = _texto(col("actividad"))
+    w["sexo_victima"] = _mapear_unicos(col("sexo"), sexo_homologado).astype(object)
 
-    logger.info(f"Transformación completada sin duplicaciones. Total registros en Fact_Violencia: {len(Fact_Violencia)}")
+    # --- comuna (entrega 2): solo tiene sentido para Bucaramanga; otro municipio -> 0 (SIN COMUNA)
+    id_comuna = _mapear_unicos(col("comuna"), comuna_a_id).astype(int)
+    w["id_comuna"] = id_comuna.where(w["municipio"] == "BUCARAMANGA", 0).astype(int)
+
+    # --- agresor -------------------------------------------------------------
+    w["edad_agre_k"] = _edad(col("edad_agre"))
+    w["sexo_agre"] = _texto(col("sexo_agre"))
+    w["parentezco_vict"] = _texto(col("parentezco_vict"))
+
+    # --- tipo de violencia -----------------------------------------------------
+    nat_raw = col("naturaleza")
+    nat = pd.to_numeric(nat_raw, errors="coerce")
+    no_numerica = nat_raw.notna() & nat.isna()
+    if no_numerica.any():
+        logger.warning(
+            "naturaleza no numérica en %d filas (ej. %s): se asignó código 0. "
+            "Revisa la columna en la tabla cruda.",
+            int(no_numerica.sum()), list(nat_raw[no_numerica].astype(str).unique()[:3]),
+        )
+    w["naturaleza_cod"] = nat.round().fillna(0).astype(int)
+    w["def_naturaleza"] = _texto(col("def_naturaleza"))
+
+    # --- atributos del hecho ---------------------------------------------------
+    w["escenario"] = _texto(col("escenario"))
+    w["zona_conf"] = _texto(col("zona_conf"))
+    w["con_fin"] = _texto(col("con_fin"))
+    w["pac_hos"] = _booleano(col("pac_hos"))
+    w["sust_vict"] = _booleano(col("sust_vict"))
+    fuente = col("fuente")
+    w["fuente"] = fuente.where(fuente.notna(), FUENTE_POR_DEFECTO).astype(str).str.strip()
+
+    if faltantes:
+        logger.warning(
+            "Columnas no encontradas en '%s' (se usó NO REPORTADO / 0 / NULL): %s",
+            TABLA_RAW, ", ".join(faltantes),
+        )
+
+    # ========================= DIMENSIONES =====================================
+    dim_pais = pd.DataFrame({"id_pais": [1], "nombre_pais": ["COLOMBIA"]})
+
+    dep = _dimension(w, ["id_pais", "departamento"], "id_departamento")
+    w = _unir(w, dep, ["id_pais", "departamento"], "id_departamento")
+    dim_departamento = dep.rename(columns={"departamento": "nombre_departamento"})[
+        ["id_departamento", "id_pais", "nombre_departamento"]
+    ]
+
+    mun_claves = ["id_departamento", "municipio", "area"]
+    mun = _dimension(w, mun_claves, "id_municipio")
+    w = _unir(w, mun, mun_claves, "id_municipio")
+    dim_municipio = mun.rename(columns={"municipio": "nombre_municipio"})[
+        ["id_municipio", "id_departamento", "nombre_municipio", "area"]
+    ]
+
+    t_claves = ["year", "mes", "semana"]
+    dim_tiempo = _dimension(w, t_claves, "id_tiempo")
+    w = _unir(w, dim_tiempo, t_claves, "id_tiempo")
+
+    v_claves = ["grupo_edad", "ciclo_vida", "tipo_seguridad_social", "actividad"]
+    dim_victima = _dimension(w, v_claves, "id_victima")
+    w = _unir(w, dim_victima, v_claves, "id_victima")
+
+    a_claves = ["edad_agre_k", "sexo_agre", "parentezco_vict"]
+    ag = _dimension(w, a_claves, "id_agresor")
+    w = _unir(w, ag, a_claves, "id_agresor")
+    dim_agresor = ag.copy()
+    dim_agresor["edad_agre"] = dim_agresor["edad_agre_k"].where(dim_agresor["edad_agre_k"] != -1).astype("Int64")
+    dim_agresor = dim_agresor[["id_agresor", "edad_agre", "sexo_agre", "parentezco_vict"]]
+
+    # UNIQUE(naturaleza): un solo registro por código, prefiriendo la def. informada
+    tv = w[["naturaleza_cod", "def_naturaleza"]].copy()
+    tv["_sin_def"] = tv["def_naturaleza"] == NO_REPORTADO
+    tv = (
+        tv.sort_values("_sin_def", kind="stable")
+        .drop_duplicates("naturaleza_cod")
+        .sort_values("naturaleza_cod")
+        .drop(columns="_sin_def")
+        .reset_index(drop=True)
+    )
+    tv.insert(0, "id_tipo_violencia", range(1, len(tv) + 1))
+    w = _unir(w, tv, ["naturaleza_cod"], "id_tipo_violencia")
+    dim_tipo_violencia = tv.rename(columns={"naturaleza_cod": "naturaleza"})[
+        ["id_tipo_violencia", "naturaleza", "def_naturaleza"]
+    ]
+
+    # ========================= HECHOS ==========================================
+    ids = ["id_municipio", "id_tiempo", "id_victima", "id_agresor", "id_tipo_violencia"]
+    if len(w) != n_raw:
+        raise ValueError(f"Los merges cambiaron el número de filas: {n_raw} -> {len(w)}")
+    if w[ids].isna().any().any():
+        raise ValueError(f"Hay claves foráneas sin resolver:\n{w[ids].isna().sum()}")
+
+    hechos = w[
+        ids + ["escenario", "zona_conf", "con_fin", "pac_hos", "sust_vict",
+               "fecha_hecho", "turno", "fuente", "sexo_victima", "id_comuna"]
+    ].reset_index(drop=True)
+    for c in ids + ["id_comuna"]:
+        hechos[c] = hechos[c].astype(int)
+
+    logger.info(
+        "Transformación completada: %d filas crudas -> %d en hechos_violencia "
+        "(municipios=%d, tiempos=%d, víctimas=%d, agresores=%d, tipos=%d).",
+        n_raw, len(hechos), len(dim_municipio), len(dim_tiempo),
+        len(dim_victima), len(dim_agresor), len(dim_tipo_violencia),
+    )
 
     return {
-        "Dim_Ubicacion": Dim_Ubicacion,
-        "Dim_Jornada": Dim_Jornada,
-        "Dim_TipoViolencia": Dim_TipoViolencia,
-        "Dim_Victima": Dim_Victima,
-        "Fact_Violencia": Fact_Violencia
+        "dim_pais": dim_pais,
+        "dim_departamento": dim_departamento,
+        "dim_municipio": dim_municipio,
+        "dim_tiempo": dim_tiempo,
+        "dim_victima": dim_victima,
+        "dim_agresor": dim_agresor,
+        "dim_tipo_violencia": dim_tipo_violencia,
+        "hechos_violencia": hechos,
     }
 
+
+# ----------------------------------------------------------------------------
+# Carga
+# ----------------------------------------------------------------------------
 def persistir_esquema_dimensional(tablas: dict):
+    """Vacía y carga todas las tablas del modelo en UNA transacción (todo o nada)."""
     if not tablas:
+        logger.warning("No hay tablas para persistir.")
         return
 
     engine = obtener_motor_db()
-    tablas_a_limpiar = ["Fact_Violencia", "fact_violencia", "hechos_violencia", "Dim_Ubicacion", "dim_municipio", 
-                        "Dim_Jornada", "dim_tiempo", "Dim_TipoViolencia", "dim_tipo_violencia", "Dim_Victima", "dim_victima"]
-    
-    with engine.begin() as conn:
-        for t in tablas_a_limpiar:
-            conn.execute(text(f"DROP TABLE IF EXISTS {t} CASCADE;"))
+    try:
+        with engine.begin() as conn:
+            existentes = {
+                r[0] for r in conn.execute(text(
+                    "SELECT table_name FROM information_schema.tables "
+                    "WHERE table_schema = current_schema()"))
+            }
+            sin_crear = [t for t in ORDEN_CARGA if t not in existentes]
+            if sin_crear:
+                raise RuntimeError(
+                    f"Faltan tablas en la BD: {sin_crear}. Ejecuta primero sql/esquema.sql"
+                )
 
-    for nombre_tabla, df_tabla in tablas.items():
-        df_tabla.to_sql(nombre_tabla, engine, if_exists="replace", index=False)
-        logger.info(f"Tabla '{nombre_tabla}' persistida ({len(df_tabla)} filas).")
+            conn.execute(text(
+                "TRUNCATE TABLE " + ", ".join(reversed(ORDEN_CARGA)) + " RESTART IDENTITY CASCADE"
+            ))
 
-    engine.dispose()
+            for nombre in ORDEN_CARGA:
+                df = tablas[nombre]
+                df.to_sql(nombre, conn, if_exists="append", index=False,
+                          method="multi", chunksize=1000)
+                logger.info("Tabla '%s' cargada (%d filas).", nombre, len(df))
+
+            for tabla, pk in SECUENCIAS.items():  # ids insertados explícitos -> ajustar SERIAL
+                conn.execute(text(
+                    f"SELECT setval(pg_get_serial_sequence('{tabla}', '{pk}'), "
+                    f"(SELECT COALESCE(MAX({pk}), 0) + 1 FROM {tabla}), false)"
+                ))
+
+            en_bd = conn.execute(text("SELECT COUNT(*) FROM hechos_violencia")).scalar()
+            if en_bd != len(tablas["hechos_violencia"]):
+                raise RuntimeError(
+                    f"hechos_violencia: se esperaban {len(tablas['hechos_violencia'])} filas y hay {en_bd}"
+                )
+    finally:
+        engine.dispose()
 
 
 if __name__ == "__main__":
     tablas_dw = ejecutar_transformacion_y_enrutado()
     persistir_esquema_dimensional(tablas_dw)
-    print("\n¡Transformación actualizada con los nombres de tablas requeridos!")
+    print("\n¡Transformación y carga dimensional completadas!")

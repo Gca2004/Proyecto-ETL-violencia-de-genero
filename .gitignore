@@ -1,28 +1,46 @@
-# Entornos virtuales
-.venv/
+# ============================================================
+# .gitignore · Proyecto ETL Violencia de Género (ODS 5)
+# ============================================================
+
+# --- Credenciales y variables de entorno (NUNCA subir) ---
+.env
+.env.*
+!.env.example
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# --- Entornos virtuales ---
 venv/
+.venv/
 env/
 
-# Caché de Python
-__pycache__/
-*.pyc
-*.pyo
-
-# Jupyter
+# --- Jupyter ---
 .ipynb_checkpoints/
 
-# Variables de entorno / credenciales de la base de datos
-.env
-*.env
+# --- Airflow (se generan al ejecutar Docker Compose) ---
+logs/
+plugins/
+config/airflow.cfg
+airflow.db
+standalone_admin_password.txt
 
-# Datos pesados (ajustar si deciden versionar una muestra pequeña)
-data/*.csv
-!data/.gitkeep
+# --- Great Expectations (contexto efímero, no se versiona) ---
+gx/uncommitted/
 
-# Archivos del sistema operativo
+# --- Caché del EDA (se regenera desde la fuente) ---
+data/eda_cache/
+
+# --- Power BI: archivos temporales y de bloqueo ---
+~$*.pbix
+*.pbix.lock
+
+# --- Sistema operativo y editores ---
 .DS_Store
 Thumbs.db
-
-# IDE
+desktop.ini
 .vscode/
 .idea/
