@@ -2,17 +2,17 @@
 dags/dag_violencia_genero.py
 DAG del pipeline ETL - Violencia contra las mujeres en Bucaramanga (ODS 5)
 
-VERSIÓN 3 (Paso 7): validación de calidad con Great Expectations antes de la
-carga final. Si alguna expectativa falla, "validar_calidad" queda en rojo y
-"cargar_fuentes_nuevas" NO se ejecuta: el modelo final conserva los datos de
-la ejecución anterior.
+VERSIÓN 4 (Entrega Final):
+- Validación temprana con Great Expectations sobre tablas raw_* post-extracción.
+- Transformación, homologación y validación final sobre stg_*.
+- Carga idempotente al modelo dimensional/analítico.
+- Publicación de features sin data leakage a Apache Kafka.
 
 Flujo:
-
     extraer_sivigila ─┐
     extraer_api ──────┤
-    extraer_vivienda ─┼──> transformar_violencia ──> transformar_fuentes_nuevas ──> validar_calidad ──> cargar_fuentes_nuevas
-    extraer_scraping ─┘                              (raw -> staging)              (Great Expectations)  (staging -> modelo final)
+    extraer_vivienda ─┼──> validar_raw ──> transformar_violencia ──> transformar_fuentes_nuevas ──> validar_calidad ──> cargar_fuentes_nuevas ──> publicar_kafka
+    extraer_scraping ─┘   (GE temprano)                                                            (GE staging)        (UPSERT / DW)             (Streaming ML)
 
 Programación: todos los días a las 6:00 a. m. (hora de Colombia).
 """
@@ -31,18 +31,15 @@ ARGUMENTOS = {
 
 @dag(
     dag_id="etl_violencia_genero_bucaramanga",
-    description="Ingesta de 4 fuentes, transformación y carga al Data Warehouse",
+    description="Ingesta de 4 fuentes, validaciones GE, carga idempotente al DW y streaming Kafka",
     schedule="0 6 * * *",                  # diario a las 6:00 a. m.
     start_date=pendulum.datetime(2026, 10, 1, tz="America/Bogota"),
     catchup=False,                         # no ejecuta los días pasados desde start_date
     max_active_runs=1,                     # nunca dos ejecuciones al mismo tiempo
     default_args=ARGUMENTOS,
-    tags=["etl", "ods5", "bucaramanga"],
+    tags=["etl", "ods5", "bucaramanga", "kafka"],
 )
 def etl_violencia_genero():
-
-    # Los imports van DENTRO de cada tarea: así Airflow puede leer el DAG
-    # rápido sin conectarse a la base de datos ni a internet.
 
     @task
     def extraer_sivigila() -> int:
@@ -68,6 +65,12 @@ def etl_violencia_genero():
         from etl.ingesta import tarea_scraping
         return tarea_scraping()
 
+    @task(retries=0)
+    def validar_raw() -> dict:
+        """Gate temprano de Great Expectations sobre tablas raw_* antes de transformar."""
+        from etl.validacion import validar_extraccion_raw
+        return validar_extraccion_raw()
+
     @task
     def transformar_violencia() -> dict:
         """Transformación de la entrega 1: raw_violencia_genero -> modelo estrella."""
@@ -82,7 +85,7 @@ def etl_violencia_genero():
         from etl.transformacion_entrega2 import transformar_fuentes_nuevas as transformar
         return transformar()
 
-    @task(retries=0)   # si los datos no cumplen las reglas, reintentar no sirve: hay que revisarlos
+    @task(retries=0)
     def validar_calidad() -> dict:
         """Great Expectations sobre stg_*: registra en log_validaciones y falla si algo no se cumple."""
         from etl.validacion import validar_staging
@@ -90,14 +93,27 @@ def etl_violencia_genero():
 
     @task
     def cargar_fuentes_nuevas() -> dict:
-        """stg_* -> hechos_api_violencia, hechos_osec_comuna, hechos_analisis, dataset_unificado."""
+        """stg_* -> hechos_api_violencia, hechos_osec_comuna, hechos_analisis, dataset_unificado (idempotente)."""
         from etl.transformacion_entrega2 import cargar_fuentes_nuevas as cargar
         return cargar()
 
+    @task
+    def publicar_kafka() -> dict:
+        """Publica registros validados (solo features, sin data leakage) al tópico de Kafka."""
+        from etl.producer import ejecutar_producer
+        return ejecutar_producer()
+
     # ---- Orden de ejecución ----
     extracciones = [extraer_sivigila(), extraer_api(), extraer_vivienda(), extraer_scraping()]
-    (extracciones >> transformar_violencia() >> transformar_fuentes_nuevas()
-     >> validar_calidad() >> cargar_fuentes_nuevas())
+    (
+        extracciones
+        >> validar_raw()
+        >> transformar_violencia()
+        >> transformar_fuentes_nuevas()
+        >> validar_calidad()
+        >> cargar_fuentes_nuevas()
+        >> publicar_kafka()
+    )
 
 
 etl_violencia_genero()

@@ -8,12 +8,13 @@ Escribe: dim_pais, dim_departamento, dim_municipio, dim_tiempo, dim_victima,
 
 Reglas clave
 ------------
-* El esquema se crea UNA vez con sql/esquema.sql. Este módulo NO borra ni
+- El esquema se crea UNA vez con sql/esquema.sql. Este módulo NO borra ni
   recrea tablas: vacía (TRUNCATE) y carga (append) dentro de UNA transacción.
   Si algo falla (CHECK, FK, etc.) se hace ROLLBACK y la BD queda como estaba.
-* Textos: MAYÚSCULAS y sin tildes; desconocido = 'NO REPORTADO'.
+- Textos: MAYÚSCULAS y sin tildes; desconocido = 'NO REPORTADO'.
   El turno NO pasa por normalizar_cadena (conserva 'MAÑANA').
-* Nunca se "rellenan" claves foráneas: si un merge falla, se lanza error.
+- Nunca se "rellenan" claves foráneas: si un merge falla, se lanza error.
+- Registros con años inválidos o fuera de rango se descartan (no se imputa 0).
 
 CAMBIO (entrega 2): hechos_violencia guarda además el sexo de la víctima
 (sexo_victima) y la comuna (id_comuna -> dim_comuna). La comuna se homologa
@@ -236,18 +237,31 @@ def ejecutar_transformacion_y_enrutado() -> dict:
     w["municipio"] = _texto(col("municipio", "nmun_resi"))
     w["area"] = _texto(col("area"))
 
-    # --- tiempo --------------------------------------------------------------
+    # --- tiempo (sin imputar 0 en años inválidos) ----------------------------
     fecha = _parsear_fecha(col("fecha_hecho", "fec_hecho"))
     anio_raw = pd.to_numeric(col("year", "anio"), errors="coerce")
     mes_raw = pd.to_numeric(col("mes"), errors="coerce")
     sem_raw = pd.to_numeric(col("semana"), errors="coerce")
-    # Si hay fecha se derivan year/mes/semana ISO de ella (consistente entre fuentes);
-    # si no, se usan las columnas crudas y, en último caso, 0 (= desconocido).
-    w["year"] = fecha.dt.year.astype("float64").fillna(anio_raw).fillna(0).astype(int)
-    w["mes"] = fecha.dt.month.astype("float64").fillna(mes_raw).fillna(0).astype(int)
-    w["semana"] = (
-        fecha.dt.isocalendar().week.astype("float64").fillna(sem_raw).fillna(0).astype(int)
-    )
+
+    anio_calc = fecha.dt.year.astype("float64").fillna(anio_raw)
+    mes_calc = fecha.dt.month.astype("float64").fillna(mes_raw)
+    sem_calc = fecha.dt.isocalendar().week.astype("float64").fillna(sem_raw)
+
+    anio_valido = anio_calc.between(1990, pd.Timestamp.now().year)
+    descartados = int((~anio_valido).sum())
+    if descartados:
+        logger.warning("Se descartaron %d registros de SIVIGILA por año nulo o fuera de rango.", descartados)
+        raw = raw.loc[anio_valido].copy()
+        w = w.loc[anio_valido].copy()
+        fecha = fecha.loc[anio_valido]
+        anio_calc = anio_calc.loc[anio_valido]
+        mes_calc = mes_calc.loc[anio_valido]
+        sem_calc = sem_calc.loc[anio_valido]
+        n_raw = len(raw)
+
+    w["year"] = anio_calc.astype(int)
+    w["mes"] = mes_calc.where(mes_calc.between(1, 12), 1).astype(int)
+    w["semana"] = sem_calc.where(sem_calc.between(1, 53), 1).astype(int)
     w["fecha_hecho"] = fecha.dt.date.where(fecha.notna(), None)
 
     # --- turno (NO pasa por normalizar_cadena) --------------------------------
@@ -362,7 +376,7 @@ def ejecutar_transformacion_y_enrutado() -> dict:
         hechos[c] = hechos[c].astype(int)
 
     logger.info(
-        "Transformación completada: %d filas crudas -> %d en hechos_violencia "
+        "Transformación completada: %d filas válidas -> %d en hechos_violencia "
         "(municipios=%d, tiempos=%d, víctimas=%d, agresores=%d, tipos=%d).",
         n_raw, len(hechos), len(dim_municipio), len(dim_tiempo),
         len(dim_victima), len(dim_agresor), len(dim_tipo_violencia),

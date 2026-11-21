@@ -3,17 +3,18 @@
 -- Proyecto ETL - Violencia contra las mujeres en Bucaramanga (ODS 5)
 --
 -- Agrega al esquema estrella de la primera entrega:
---   * dim_municipio      + codigo_dane, latitud, longitud
---   * dim_comuna         (nueva, fija): 17 comunas + 3 corregimientos + SIN COMUNA
---   * hechos_violencia   + sexo_victima, id_comuna
---   * hechos_api_violencia   (nueva) casos Medicina Legal, víctimas mujeres
---   * hechos_osec_comuna     (nueva) denuncias por comuna y mes (OSEC)
---   * hechos_analisis        (ya existía) viviendas ECV 2024
---   * dataset_unificado      (nueva) conjunto único y enriquecido por año-mes
---   * vista_comuna_anual     (vista) comparación SIVIGILA vs OSEC por comuna
---   * tablas stg_*           zona de staging: lo que produce la transformación
---                            ANTES de validarlo y cargarlo al modelo final
---   * log_validaciones       registro de cada validación de Great Expectations
+--   * dim_municipio                + codigo_dane, latitud, longitud
+--   * dim_comuna                   (nueva, fija): 17 comunas + 3 corregimientos + SIN COMUNA
+--   * hechos_violencia             + sexo_victima, id_comuna
+--   * hechos_api_violencia         (nueva) casos Medicina Legal, víctimas mujeres
+--   * hechos_osec_comuna           (nueva) denuncias por comuna y mes (OSEC)
+--   * hechos_analisis              (ya existía) viviendas ECV 2024
+--   * dataset_unificado            (nueva) conjunto único y enriquecido por año-mes
+--   * vista_comuna_anual           (vista) comparación SIVIGILA vs OSEC por comuna
+--   * vista_ml_hechos_enriquecidos (vista) features limpias y target para ML y Kafka
+--   * tablas stg_*                 zona de staging: lo que produce la transformación
+--                                  ANTES de validarlo y cargarlo al modelo final
+--   * log_validaciones             registro de cada validación de Great Expectations
 --
 -- ORDEN DE EJECUCIÓN:
 --   1. sql/raw_violencia_genero.sql
@@ -21,8 +22,6 @@
 --   3. script de hechos_analisis / dim_estrato
 --   4. sql/raw_fuentes_entrega2.sql
 --   5. ESTE ARCHIVO
--- Si se vuelve a ejecutar esquema_violencia_genero.sql, hay que volver a
--- ejecutar este archivo (aquel recrea hechos_violencia y dim_municipio).
 --
 -- Es RE-EJECUTABLE: usa IF NOT EXISTS / OR REPLACE.
 -- ============================================================
@@ -247,8 +246,41 @@ CREATE TABLE IF NOT EXISTS log_validaciones (
 );
 CREATE INDEX IF NOT EXISTS idx_log_validaciones_fecha ON log_validaciones(fecha_ejecucion);
 
--- Última ejecución, resumida por suite:
--- SELECT suite, COUNT(*) AS expectativas, COUNT(*) FILTER (WHERE exito) AS cumplidas
--- FROM log_validaciones
--- WHERE fecha_ejecucion = (SELECT MAX(fecha_ejecucion) FROM log_validaciones)
--- GROUP BY suite ORDER BY suite;
+
+-- ------------------------------------------------------------
+-- 10. VISTA ENRIQUECIDA PARA ML Y STREAMING KAFKA
+--     Une hechos_api_violencia con dim_municipio, dim_tiempo,
+--     contexto mensual OSEC (dataset_unificado) y moda territorial ECV.
+-- ------------------------------------------------------------
+CREATE OR REPLACE VIEW vista_ml_hechos_enriquecidos AS
+WITH ecv_area AS (
+    SELECT DISTINCT ON (ha.id_municipio)
+           ha.id_municipio,
+           ha.id_estrato   AS nivel_estrato,
+           ha.zona_vivienda
+    FROM hechos_analisis ha
+    GROUP BY ha.id_municipio, ha.id_estrato, ha.zona_vivienda
+    ORDER BY ha.id_municipio, COUNT(*) DESC
+)
+SELECT
+    h.id_hecho_api,
+    h.escenario,
+    h.ciclo_vida,
+    h.contexto,
+    h.turno,
+    h.dias_incapacidad,
+    h.tipo_violencia,
+    m.nombre_municipio,
+    m.area,
+    t.mes,
+    t.year                                     AS anio,
+    COALESCE(du.osec_denuncias_sexuales, 0)    AS osec_denuncias_sexuales,
+    COALESCE(ecv.nivel_estrato, 2)             AS nivel_estrato,
+    COALESCE(ecv.zona_vivienda, 1)             AS zona_vivienda,
+    h.grupo_agresor,
+    h.presunto_agresor
+FROM hechos_api_violencia h
+JOIN dim_municipio m ON m.id_municipio = h.id_municipio
+JOIN dim_tiempo t    ON t.id_tiempo = h.id_tiempo
+LEFT JOIN dataset_unificado du ON du.anio = t.year AND du.mes = t.mes
+LEFT JOIN ecv_area ecv         ON ecv.id_municipio = h.id_municipio;
