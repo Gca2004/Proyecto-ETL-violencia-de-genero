@@ -6,16 +6,16 @@ ECV 2024) e integración de las 4 fuentes en el conjunto unificado.
 El proceso tiene DOS pasos, y cada uno es una tarea del DAG:
 
 1. transformar_fuentes_nuevas()
-   Lee las tablas crudas (raw_*) y el modelo de SIVIGILA, limpia, homologa y
-   escribe el resultado en las tablas de STAGING (stg_*). Todavía no toca el
-   modelo final.
+   Lee las tablas crudas (raw_*) y el modelo de SIVIGILA, limpia, homologa,
+   descarta registros con años inválidos (sin imputar 0) y escribe el resultado
+   en las tablas de STAGING (stg_*). Todavía no toca el modelo final.
 
 2. cargar_fuentes_nuevas()
    Ejecuta sql/cargar_entrega2.sql: resuelve los ids de las dimensiones y pasa
-   stg_* a las tablas finales, todo en UNA transacción.
+   stg_* a las tablas finales de forma idempotente (UPSERT), todo en UNA transacción.
 
-Entre los dos pasos va la validación con Great Expectations (Paso 7): si los
-datos de staging no cumplen las reglas, la carga no se ejecuta.
+Entre los dos pasos va la validación con Great Expectations: si los datos de
+staging no cumplen las reglas, la carga no se ejecuta.
 
 Requisitos: sql/raw_fuentes_entrega2.sql y sql/esquema_entrega2.sql ejecutados,
 y que etl/transformacion.py ya haya cargado el modelo de SIVIGILA.
@@ -97,16 +97,27 @@ def _entero(serie: pd.Series) -> pd.Series:
 # Fuente 2: API Medicina Legal  ->  stg_hechos_api
 # ---------------------------------------------------------------------------
 def transformar_api(raw: pd.DataFrame) -> pd.DataFrame:
-    """raw_api_violencia (alcance BUCARAMANGA) -> un caso por fila, solo víctimas mujeres."""
+    """raw_api_violencia (alcance BUCARAMANGA) -> un caso por fila, solo víctimas mujeres con año válido."""
     sexo = _mapear(raw["sexo_de_la_victima"], hom.sexo)
     mujeres = raw[sexo == "FEMENINO"].copy()
-    logger.info("API: %d casos de Bucaramanga, %d con víctima mujer (%d excluidos por sexo).",
+
+    anio_num = pd.to_numeric(mujeres["a_o_del_hecho"], errors="coerce")
+    anio_actual = pd.Timestamp.now().year
+    validos = anio_num.between(2015, anio_actual)
+    descartados_anio = int((~validos).sum())
+    if descartados_anio:
+        logger.warning("API: se descartaron %d registros por año nulo o fuera de [2015, %d].",
+                       descartados_anio, anio_actual)
+    mujeres = mujeres[validos].copy()
+    anio_limpio = anio_num[validos].astype(int)
+
+    logger.info("API: %d casos de Bucaramanga, %d válidos con víctima mujer (%d excluidos).",
                 len(raw), len(mujeres), len(raw) - len(mujeres))
 
     contexto = _mapear(mujeres["contexto_del_hecho"], hom.normalizar).str.replace(r"^\d+\s+", "", regex=True)
     df = pd.DataFrame({
         "id_caso_api": mujeres["id"].astype(str),
-        "anio": pd.to_numeric(mujeres["a_o_del_hecho"], errors="coerce").fillna(0).astype(int),
+        "anio": anio_limpio,
         "mes": _mapear(mujeres["mes_del_hecho"], hom.mes).astype(int),
         "area": _mapear(mujeres["zona_del_hecho"], hom.area),
         "ciclo_vida": _mapear(mujeres["ciclo_vital"], hom.ciclo_vida),
@@ -331,7 +342,9 @@ GROUP BY t.year, t.mes, h.sexo_victima, a.parentezco_vict, h.turno, h.con_fin
 
 def preparar_sivigila(siv: pd.DataFrame) -> pd.DataFrame:
     siv = siv.copy()
-    siv["anio"] = pd.to_numeric(siv["anio"], errors="coerce").fillna(0).astype(int)
+    siv["anio"] = pd.to_numeric(siv["anio"], errors="coerce")
+    siv = siv[siv["anio"].between(1990, pd.Timestamp.now().year)].copy()
+    siv["anio"] = siv["anio"].astype(int)
     siv["mes"] = pd.to_numeric(siv["mes"], errors="coerce").fillna(0).astype(int)
     siv["n"] = pd.to_numeric(siv["n"]).astype(int)
     siv["grupo_agresor"] = _mapear(siv["parentezco_vict"], hom.grupo_agresor)

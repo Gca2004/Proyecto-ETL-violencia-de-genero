@@ -1,18 +1,19 @@
 """
 etl/validacion.py
-Validación de calidad con Great Expectations (GX Core 1.x) sobre la zona de
-staging, ANTES de cargar al modelo final.
+Validación de calidad con Great Expectations (GX Core 1.x) en dos puntos del DAG:
+  1. validar_extraccion_raw(): justo después de la extracción (sobre raw_*),
+     antes de ejecutar cualquier transformación.
+  2. validar_staging(): sobre la zona de staging (stg_*), antes de cargar al
+     modelo final.
 
 Flujo en el DAG:
-    transformar_fuentes_nuevas -> validar_calidad -> cargar_fuentes_nuevas
+    extracciones -> validar_raw -> transformaciones -> validar_calidad -> cargar_fuentes_nuevas
 
-* Hay una suite (conjunto de expectativas) por cada tabla stg_*.
-* Las expectativas salen del EDA (Docs/notebook/eda_perfilamiento.ipynb, Parte 6).
-* Cada resultado se registra (log):
-    - en la tabla log_validaciones de PostgreSQL (una fila por expectativa), y
-    - en un archivo JSON en data/validaciones/ (uno por ejecución).
-* Si alguna expectativa falla, validar_staging() lanza un error: la tarea de
-  Airflow queda en rojo y la tarea de carga NO se ejecuta.
+- Cada resultado se registra en:
+  - la tabla log_validaciones de PostgreSQL (una fila por expectativa), y
+  - un archivo JSON en data/validaciones/ (uno por ejecución).
+- Si alguna expectativa falla, lanza ValueError: la tarea de Airflow queda en
+  rojo y las tareas posteriores NO se ejecutan.
 
 Uso manual (desde la raíz del proyecto):
     python etl/validacion.py
@@ -58,12 +59,89 @@ IDS_COMUNA = [0] + list(range(1, 18)) + [101, 102, 103]
 
 
 # ---------------------------------------------------------------------------
-# Suites: (expectativa de GX, argumentos, por qué existe la regla)
+# Helpers de definición de reglas
 # ---------------------------------------------------------------------------
 def _no_nulos(columnas):
     return [("ExpectColumnValuesToNotBeNull", {"column": c}, f"{c} siempre tiene valor") for c in columnas]
 
 
+def _existen_columnas(columnas):
+    return [("ExpectColumnToExist", {"column": c}, f"La columna {c} existe en el esquema crudo") for c in columnas]
+
+
+# ---------------------------------------------------------------------------
+# 1. Suites de Validación Temprana (Post-Extracción / Zona RAW)
+# ---------------------------------------------------------------------------
+SUITES_RAW = {
+    "raw_suite_sivigila": {
+        "tabla": "raw_violencia_genero",
+        "expectativas": [
+            ("ExpectTableRowCountToBeBetween", {"min_value": 1000, "max_value": 200000},
+             "raw_violencia_genero debe tener registros cargados de SIVIGILA/Histórico"),
+            *_existen_columnas(["departamento", "municipio", "year", "mes", "sexo", "ciclo_vida", "parentezco_vict", "fuente"]),
+            *_no_nulos(["fuente"]),
+            ("ExpectColumnValuesToBeInSet", {"column": "fuente", "value_set": ["SIVIGILA_Colombia", "Historico_Bucaramanga"]},
+             "Solo fuentes válidas de SIVIGILA en raw_violencia_genero"),
+        ],
+    },
+    "raw_suite_api": {
+        "tabla": "raw_api_violencia",
+        "expectativas": [
+            ("ExpectTableRowCountToBeBetween", {"min_value": 1000, "max_value": 100000},
+             "La API Medicina Legal debe traer registros de Bucaramanga y muestra nacional"),
+            *_existen_columnas([
+                "id", "a_o_del_hecho", "mes_del_hecho", "sexo_de_la_victima", "ciclo_vital",
+                "codigo_dane_municipio", "escenario_del_hecho", "contexto_del_hecho",
+                "rango_de_hora_del_hecho_x_3_horas", "dias_de_incapacidad_medicolegal",
+                "presunto_agresor_detallado", "alcance"
+            ]),
+            *_no_nulos(["id", "alcance"]),
+            ("ExpectColumnValuesToBeInSet", {"column": "alcance", "value_set": ["BUCARAMANGA", "MUESTRA_NACIONAL"]},
+             "El alcance crudo debe ser BUCARAMANGA o MUESTRA_NACIONAL"),
+            ("ExpectColumnValuesToMatchRegex", {"column": "a_o_del_hecho", "regex": r"^\d{4}$"},
+             "El año crudo de la API debe venir en formato de 4 dígitos"),
+        ],
+    },
+    "raw_suite_vivienda": {
+        "tabla": "raw_vivienda",
+        "expectativas": [
+            ("ExpectTableRowCountToBeBetween", {"min_value": 500, "max_value": 500000},
+             "raw_vivienda debe contener el archivo de ECV 2024"),
+            *_existen_columnas(["p1_departamento", "p1_municipio", "clase", "p1070", "p8520s1", "p8520s1a1"]),
+            *_no_nulos(["p1_departamento", "p1_municipio"]),
+            ("ExpectColumnDistinctValuesToContainSet", {"column": "p1_departamento", "value_set": ["68"]},
+             "Debe existir Santander (68) en raw_vivienda"),
+        ],
+    },
+    "raw_suite_scraping_boletines": {
+        "tabla": "raw_scraping_boletines",
+        "expectativas": [
+            ("ExpectTableRowCountToBeBetween", {"min_value": 1, "max_value": 500},
+             "Debe existir al menos un boletín descargado de OSEC"),
+            *_existen_columnas(["periodo", "nombre_boletin", "url_pdf", "estado_extraccion"]),
+            *_no_nulos(["periodo"]),
+            ("ExpectColumnValuesToBeUnique", {"column": "periodo"}, "Un registro único por periodo de boletín"),
+            ("ExpectColumnValuesToMatchRegex", {"column": "periodo", "regex": r"^\d{6}$"},
+             "El periodo del boletín debe tener formato AAAAMM"),
+        ],
+    },
+    "raw_suite_scraping_comunas": {
+        "tabla": "raw_scraping_comunas",
+        "expectativas": [
+            ("ExpectTableRowCountToBeBetween", {"min_value": 42, "max_value": 50000},
+             "Al menos un boletín completo con 21 comunas x 2 delitos"),
+            *_existen_columnas(["periodo", "delito", "bloque", "comuna", "casos_anio_actual", "anio_actual"]),
+            *_no_nulos(["periodo", "delito", "bloque", "comuna"]),
+            ("ExpectColumnValuesToMatchRegex", {"column": "periodo", "regex": r"^\d{6}$"},
+             "Periodo en formato AAAAMM"),
+        ],
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# 2. Suites de Validación Final (Pre-Carga DW / Zona STAGING)
+# ---------------------------------------------------------------------------
 SUITES = {
     "suite_hechos_api": {
         "tabla": "stg_hechos_api",
@@ -254,20 +332,20 @@ def validar_tabla(contexto, nombre_suite: str, definicion: dict, df: pd.DataFram
     return filas
 
 
-def validar_staging() -> dict:
-    """Valida todas las tablas stg_*; registra los resultados y falla si alguna regla no se cumple."""
+def _ejecutar_suites(suites_dict: dict, prefijo_archivo: str, fase: str) -> dict:
+    """Motor común de ejecución, persistencia de logs y detención en caso de fallo."""
     inicio = datetime.now()
     contexto = gx.get_context(mode="ephemeral")
     engine = obtener_motor_db()
     try:
         filas = []
-        for nombre_suite, definicion in SUITES.items():
+        for nombre_suite, definicion in suites_dict.items():
             with engine.connect() as conn:
                 df = pd.read_sql(text(f"SELECT * FROM {definicion['tabla']}"), conn)
             filas_suite = validar_tabla(contexto, nombre_suite, definicion, df)
             ok = sum(f["exito"] for f in filas_suite)
-            logger.info("%-25s %-22s %d filas  -> %d/%d expectativas cumplidas",
-                        nombre_suite, definicion["tabla"], len(df), ok, len(filas_suite))
+            logger.info("[%s] %-28s %-24s %d filas  -> %d/%d expectativas cumplidas",
+                        fase, nombre_suite, definicion["tabla"], len(df), ok, len(filas_suite))
             for f in filas_suite:
                 if not f["exito"]:
                     logger.error("   FALLA %s (%s): %s | observado=%s | inesperadas=%s | ej=%s",
@@ -287,25 +365,46 @@ def validar_staging() -> dict:
 
         # Registro 2: archivo JSON
         CARPETA_RESULTADOS.mkdir(parents=True, exist_ok=True)
-        archivo = CARPETA_RESULTADOS / f"validacion_{inicio:%Y%m%d_%H%M%S_%f}.json"
+        archivo = CARPETA_RESULTADOS / f"{prefijo_archivo}_{inicio:%Y%m%d_%H%M%S_%f}.json"
         archivo.write_text(json.dumps({
-            "fecha_ejecucion": inicio.isoformat(), "exito": exito_total,
-            "expectativas": int(len(log)), "fallidas": int((~log["exito"]).sum()),
+            "fase": fase,
+            "fecha_ejecucion": inicio.isoformat(),
+            "exito": exito_total,
+            "expectativas": int(len(log)),
+            "fallidas": int((~log["exito"]).sum()),
             "resultados": log.drop(columns="fecha_ejecucion").to_dict("records"),
         }, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
 
-        resumen = {"exito": exito_total, "expectativas": int(len(log)),
-                   "cumplidas": int(log["exito"].sum()), "fallidas": int((~log["exito"]).sum()),
-                   "archivo": archivo.name}
-        logger.info("Resultado de la validación: %s", resumen)
+        resumen = {
+            "fase": fase,
+            "exito": exito_total,
+            "expectativas": int(len(log)),
+            "cumplidas": int(log["exito"].sum()),
+            "fallidas": int((~log["exito"]).sum()),
+            "archivo": archivo.name,
+        }
+        logger.info("Resultado de la validación [%s]: %s", fase, resumen)
         if not exito_total:
             fallidas = log.loc[~log["exito"], ["suite", "expectativa", "columna"]].to_dict("records")
-            raise ValueError(f"Validación de calidad FALLIDA ({resumen['fallidas']} expectativas). "
-                             f"No se cargará el modelo final. Detalle: {fallidas}")
+            raise ValueError(f"Validación [{fase}] FALLIDA ({resumen['fallidas']} expectativas). "
+                             f"Se detiene el pipeline. Detalle: {fallidas}")
         return resumen
     finally:
         engine.dispose()
 
 
+def validar_extraccion_raw() -> dict:
+    """Valida tablas raw_* post-extracción; falla inmediatamente si hay datos corruptos."""
+    return _ejecutar_suites(SUITES_RAW, prefijo_archivo="validacion_raw", fase="RAW_POST_EXTRACCION")
+
+
+def validar_staging() -> dict:
+    """Valida todas las tablas stg_*; registra los resultados y falla si alguna regla no se cumple."""
+    return _ejecutar_suites(SUITES, prefijo_archivo="validacion_stg", fase="STAGING_PRE_CARGA")
+
+
 if __name__ == "__main__":
+    print("--- Validando RAW ---")
+    print(validar_extraccion_raw())
+    print("--- Validando STAGING ---")
     print(validar_staging())
