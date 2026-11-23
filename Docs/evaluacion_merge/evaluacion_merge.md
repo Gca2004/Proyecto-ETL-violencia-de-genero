@@ -1,6 +1,6 @@
 # Evaluación estadística del merge
 
-Generado: 2026-11-23 01:57 · Nivel de significancia α = 0.05
+Generado: 2026-11-23 02:04 · Nivel de significancia α = 0.05
 
 **Pregunta:** ¿unir las fuentes de serie de tiempo (SIVIGILA, Medicina Legal, OSEC) con la fuente estacionaria
 (ECV 2024) es estadísticamente válido y no sesga los datos?

@@ -276,18 +276,41 @@ def evaluar(d: dict) -> tuple[dict, dict]:
     fig.savefig(figs["series"], dpi=220, bbox_inches="tight")
     plt.close(fig)
 
-    com["pct_siv"] = com["sivigila"] / com["sivigila"].sum() * 100
-    com["pct_osec"] = com["osec_vif"] / (com["osec_vif"].sum() or 1) * 100
-    fig, ax = plt.subplots(figsize=(5.5, 4.2))
-    ax.scatter(com["pct_siv"], com["pct_osec"], s=46, color=AZUL, edgecolor="white", linewidth=1.5, zorder=3)
-    for _, f in com.iterrows():
-        ax.annotate(str(f.get("nombre_comuna", "")).title()[:14], (f["pct_siv"], f["pct_osec"]),
-                    xytext=(4, 3), textcoords="offset points", fontsize=7, color=TINTA)
-    tope = max(com["pct_siv"].max(), com["pct_osec"].max()) * 1.1
-    ax.plot([0, tope], [0, tope], color=GRIS, ls="--", lw=1)
-    ax.set_xlabel("% de casos de mujeres (SIVIGILA)")
-    ax.set_ylabel("% de denuncias VIF (OSEC)")
-    ax.set_title(f"T6 · Comunas: SIVIGILA vs OSEC · ρ = {r['T6']['rho']}", fontsize=10)
+    # Gráfica T6: mismo periodo en ambas fuentes (comparación justa) si hay datos
+    nombres = d["comuna_siv"][["numero_comuna", "nombre_comuna"]]
+    if len(d.get("comuna_siv_periodo", [])):
+        g = d["comuna_siv_periodo"].merge(d["comuna_osec"], on="numero_comuna", how="outer").fillna(0)
+        rho_g, periodo_g = r["T6_mismo_periodo"]["rho"], "mismo periodo del OSEC"
+    else:
+        g, rho_g, periodo_g = com.copy(), r["T6"]["rho"], "todo el histórico"
+    g = g.drop(columns=["nombre_comuna"], errors="ignore").merge(nombres, on="numero_comuna", how="left")
+    g["pct_siv"] = g["sivigila"] / g["sivigila"].sum() * 100
+    g["pct_osec"] = g["osec_vif"] / (g["osec_vif"].sum() or 1) * 100
+    g["brecha"] = g["pct_osec"] - g["pct_siv"]
+    # Se nombran solo las comunas que importan: las 3 más grandes y las 2 brechas más fuertes
+    destacadas = set(g.nlargest(3, "pct_siv")["numero_comuna"]) | set(g.nlargest(3, "pct_osec")["numero_comuna"])
+    destacadas |= set(g.loc[g["brecha"].abs().nlargest(2).index, "numero_comuna"])
+
+    fig, ax = plt.subplots(figsize=(7.2, 5.4))
+    tope = max(g["pct_siv"].max(), g["pct_osec"].max()) * 1.15
+    ax.fill_between([0, tope], [0, tope], [tope, tope], color=NARANJA, alpha=0.06, lw=0)
+    ax.fill_between([0, tope], [0, 0], [0, tope], color=AZUL, alpha=0.06, lw=0)
+    ax.plot([0, tope], [0, tope], color=GRIS, ls="--", lw=1.2)
+    ax.text(tope * 0.04, tope * 0.93, "Más denuncias que casos atendidos", color=NARANJA, fontsize=8.5, fontweight="bold")
+    ax.text(tope * 0.55, tope * 0.05, "Más casos atendidos que denuncias", color=AZUL, fontsize=8.5, fontweight="bold")
+    ax.text(tope * 0.80, tope * 0.84, "igual proporción", color="#8a8984", fontsize=7.5, rotation=36)
+    colores = [NARANJA if b >= 5 else (AZUL if b <= -5 else "#6f6e69") for b in g["brecha"]]
+    ax.scatter(g["pct_siv"], g["pct_osec"], s=58, c=colores, edgecolor="white", linewidth=1.5, zorder=3)
+    for _, f in g.iterrows():
+        if f["numero_comuna"] in destacadas:
+            ax.annotate(f"{int(f['numero_comuna'])}. {str(f['nombre_comuna']).title()}", (f["pct_siv"], f["pct_osec"]),
+                        xytext=(7, 4), textcoords="offset points", fontsize=8.5, color=TINTA, fontweight="bold")
+    ax.set_xlim(0, tope)
+    ax.set_ylim(0, tope)
+    ax.set_xlabel("% de los casos de mujeres atendidos en salud (SIVIGILA)")
+    ax.set_ylabel("% de las denuncias de violencia intrafamiliar (OSEC)")
+    ax.set_title(f"T6 · ¿Coinciden las comunas entre fuentes? ({periodo_g})\n"
+                 f"Spearman ρ = {rho_g} · naranja/azul = brecha de 5 puntos o más · gris = resto de comunas", fontsize=10)
     fig.tight_layout()
     figs["comunas"] = SALIDA / "t6_comunas_sivigila_osec.png"
     fig.savefig(figs["comunas"], dpi=220, bbox_inches="tight")
