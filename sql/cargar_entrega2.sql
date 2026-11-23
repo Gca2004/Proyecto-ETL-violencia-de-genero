@@ -121,3 +121,41 @@ BEGIN
         RAISE EXCEPTION USING MESSAGE = 'Carga incompleta (filas de staging sin municipio o tiempo):' || faltan;
     END IF;
 END $$;
+
+-- ------------------------------------------------------------
+-- Garantizar creación/actualización de vista_ml_hechos_enriquecidos
+-- sin imputaciones artificiales (NULL preservado para ML Pipeline)
+-- ------------------------------------------------------------
+DROP VIEW IF EXISTS vista_ml_hechos_enriquecidos;
+CREATE OR REPLACE VIEW vista_ml_hechos_enriquecidos AS
+WITH ecv_area AS (
+    SELECT DISTINCT ON (ha.id_municipio)
+           ha.id_municipio,
+           ha.id_estrato   AS nivel_estrato,
+           ha.zona_vivienda
+    FROM hechos_analisis ha
+    GROUP BY ha.id_municipio, ha.id_estrato, ha.zona_vivienda
+    ORDER BY ha.id_municipio, COUNT(*) DESC
+)
+SELECT
+    h.id_hecho_api,
+    h.escenario,
+    h.ciclo_vida,
+    h.contexto,
+    h.turno,
+    h.dias_incapacidad,
+    h.tipo_violencia,
+    m.nombre_municipio,
+    m.area,
+    t.mes,
+    t.year AS anio,
+    du.osec_denuncias_sexuales,
+    ecv.nivel_estrato,
+    ecv.zona_vivienda,
+    h.grupo_agresor,
+    h.presunto_agresor
+FROM hechos_api_violencia h
+JOIN dim_municipio m ON m.id_municipio = h.id_municipio
+JOIN dim_tiempo t    ON t.id_tiempo = h.id_tiempo
+LEFT JOIN dataset_unificado du ON du.anio = t.year AND du.mes = t.mes
+LEFT JOIN ecv_area ecv         ON ecv.id_municipio = h.id_municipio;

@@ -118,31 +118,40 @@ def cargar_registros_validados() -> pd.DataFrame:
     return df
 
 
+def _a_entero_o_none(valor):
+    """Convierte a int nativo de Python o devuelve None (null en JSON) si viene vacío/NaN."""
+    if valor is None or pd.isna(valor):
+        return None
+    return int(valor)
+
+
+def _a_texto_o_none(valor):
+    """Convierte a str nativo de Python o devuelve None (null en JSON) si viene vacío/NaN."""
+    if valor is None or pd.isna(valor):
+        return None
+    texto = str(valor).strip()
+    return texto if texto else None
+
+
 def construir_mensaje(fila: dict) -> dict:
-    """Construye el diccionario JSON respetando el contrato y tipos nativos de Python."""
-    mensaje = {
+    """Construye el diccionario JSON respetando el contrato y preservando nulls reales."""
+    return {
         "id_hecho_api": int(fila["id_hecho_api"]),
         "timestamp_evento": datetime.now(timezone.utc).isoformat(),
-        "escenario": str(fila["escenario"]),
-        "ciclo_vida": str(fila["ciclo_vida"]),
-        "contexto": str(fila["contexto"]),
-        "turno": str(fila["turno"]),
-        "dias_incapacidad": str(fila["dias_incapacidad"]),
-        "tipo_violencia": str(fila["tipo_violencia"]),
-        "nombre_municipio": str(fila["nombre_municipio"]),
-        "area": str(fila["area"]),
-        "mes": int(fila["mes"]),
-        "anio": int(fila["anio"]),
-        "osec_denuncias_sexuales": int(fila["osec_denuncias_sexuales"]),
-        "nivel_estrato": int(fila["nivel_estrato"]),
-        "zona_vivienda": int(fila["zona_vivienda"]),
+        "escenario": _a_texto_o_none(fila.get("escenario")),
+        "ciclo_vida": _a_texto_o_none(fila.get("ciclo_vida")),
+        "contexto": _a_texto_o_none(fila.get("contexto")),
+        "turno": _a_texto_o_none(fila.get("turno")),
+        "dias_incapacidad": _a_texto_o_none(fila.get("dias_incapacidad")),
+        "tipo_violencia": _a_texto_o_none(fila.get("tipo_violencia")),
+        "nombre_municipio": _a_texto_o_none(fila.get("nombre_municipio")),
+        "area": _a_texto_o_none(fila.get("area")),
+        "mes": _a_entero_o_none(fila.get("mes")),
+        "anio": _a_entero_o_none(fila.get("anio")),
+        "osec_denuncias_sexuales": _a_entero_o_none(fila.get("osec_denuncias_sexuales")),
+        "nivel_estrato": _a_entero_o_none(fila.get("nivel_estrato")),
+        "zona_vivienda": _a_entero_o_none(fila.get("zona_vivienda")),
     }
-
-    # Garantizar que ninguna llave prohibida viaje en el payload
-    if COLUMNAS_PROHIBIDAS_LEAKAGE.intersection(mensaje.keys()):
-        raise RuntimeError("Se detecto fuga de informacion en el mensaje JSON.")
-
-    return mensaje
 
 
 def ejecutar_producer(delay: float = STREAM_DELAY_SEC) -> dict:
