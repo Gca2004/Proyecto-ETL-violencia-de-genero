@@ -1,0 +1,124 @@
+{
+  "T1": {
+    "antes": 1936,
+    "despues": 1936,
+    "origen_antes": "stg_hechos_api (staging)",
+    "duplicados": 0,
+    "faltantes": 0,
+    "ok": true
+  },
+  "T2": {
+    "ciclo_vida": {
+      "chi2": 0.0,
+      "p_valor": 1.0,
+      "tvd": 0.0,
+      "categorias": 6
+    },
+    "grupo_agresor": {
+      "chi2": 0.0,
+      "p_valor": 1.0,
+      "tvd": 0.0,
+      "categorias": 4
+    },
+    "escenario": {
+      "chi2": 0.0,
+      "p_valor": 1.0,
+      "tvd": 0.0,
+      "categorias": 22
+    },
+    "turno": {
+      "chi2": 0.0,
+      "p_valor": 1.0,
+      "tvd": 0.0,
+      "categorias": 4
+    },
+    "dias_incapacidad": {
+      "chi2": 0.0,
+      "p_valor": 1.0,
+      "tvd": 0.0,
+      "categorias": 4
+    },
+    "area": {
+      "chi2": 0.0,
+      "p_valor": 1.0,
+      "tvd": 0.0,
+      "categorias": 4
+    },
+    "anio": {
+      "chi2": 0.0,
+      "p_valor": 1.0,
+      "tvd": 0.0,
+      "categorias": 10
+    }
+  },
+  "T2_ok": true,
+  "T3": {
+    "siv_casos_mujeres": {
+      "meses_comparados": 129,
+      "max_diferencia": 0
+    },
+    "api_casos_mujeres": {
+      "meses_comparados": 120,
+      "max_diferencia": 0
+    }
+  },
+  "T3_ok": true,
+  "T4": {
+    "ecv_viviendas_bucaramanga": {
+      "meses_con_dato": 141,
+      "valores_distintos": 1,
+      "desviacion": 0.0
+    },
+    "ecv_pct_estrato_1_2": {
+      "meses_con_dato": 141,
+      "valores_distintos": 1,
+      "desviacion": 0.0
+    },
+    "ecv_pct_estrato_5_6": {
+      "meses_con_dato": 141,
+      "valores_distintos": 1,
+      "desviacion": 0.0
+    }
+  },
+  "T4_ok": true,
+  "T5": {
+    "mensual_siv_vs_api": {
+      "rho": 0.103,
+      "p_valor": 0.2628,
+      "n": 120
+    },
+    "anual_siv_vs_api": {
+      "rho": 0.091,
+      "p_valor": 0.8028,
+      "n": 10
+    },
+    "mensual_siv_vs_osec": {
+      "rho": 0.235,
+      "p_valor": 0.3487,
+      "n": 18
+    }
+  },
+  "T6": {
+    "rho": 0.821,
+    "p_valor": 0.0001,
+    "n": 17
+  },
+  "T6_mismo_periodo": {
+    "rho": 0.765,
+    "p_valor": 0.0003,
+    "n": 17
+  },
+  "T7": {
+    "casos_con_osec": 110,
+    "casos_sin_osec": 1826,
+    "p_valor": 0.3296,
+    "v_cramer": 0.042
+  },
+  "T8": {
+    "ciclo_vida": 0.69,
+    "nivel_estrato": 0.035,
+    "zona_vivienda": 0.035,
+    "osec_disponible": 0.015,
+    "area": 0.055
+  }
+}

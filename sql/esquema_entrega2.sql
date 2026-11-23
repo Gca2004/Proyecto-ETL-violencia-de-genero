@@ -252,6 +252,7 @@ CREATE INDEX IF NOT EXISTS idx_log_validaciones_fecha ON log_validaciones(fecha_
 --     Une hechos_api_violencia con dim_municipio, dim_tiempo,
 --     contexto mensual OSEC (dataset_unificado) y moda territorial ECV.
 -- ------------------------------------------------------------
+DROP VIEW IF EXISTS vista_ml_hechos_enriquecidos;
 CREATE OR REPLACE VIEW vista_ml_hechos_enriquecidos AS
 WITH ecv_area AS (
     SELECT DISTINCT ON (ha.id_municipio)
@@ -274,9 +275,9 @@ SELECT
     m.area,
     t.mes,
     t.year                                     AS anio,
-    COALESCE(du.osec_denuncias_sexuales, 0)    AS osec_denuncias_sexuales,
-    COALESCE(ecv.nivel_estrato, 2)             AS nivel_estrato,
-    COALESCE(ecv.zona_vivienda, 1)             AS zona_vivienda,
+    du.osec_denuncias_sexuales,
+    ecv.nivel_estrato,
+    ecv.zona_vivienda,
     h.grupo_agresor,
     h.presunto_agresor
 FROM hechos_api_violencia h

@@ -7,6 +7,10 @@
 .env.*
 !.env.example
 
+# --- Configuración local de cada integrante (no se comparte) ---
+# Ej.: apuntar Airflow al PostgreSQL instalado en Windows en vez del contenedor
+docker-compose.override.yml
+
 # --- Python ---
 __pycache__/
 *.py[cod]
@@ -43,4 +47,4 @@ data/eda_cache/
 Thumbs.db
 desktop.ini
 .vscode/
-.idea/docker-compose.override.yml
+.idea/
