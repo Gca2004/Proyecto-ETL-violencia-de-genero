@@ -272,7 +272,7 @@ def guardar_matriz_confusion(y, pred, nombre_modelo: str, umbral: float):
     ax.set_ylabel("Valor real")
     fig.tight_layout()
     ruta = DIR_GRAFICAS / "ml_matriz_confusion.png"
-    fig.savefig(ruta, dpi=150)
+    fig.savefig(ruta, dpi=220, bbox_inches="tight")
     plt.close(fig)
     return ruta
 

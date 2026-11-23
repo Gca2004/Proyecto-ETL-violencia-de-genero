@@ -258,7 +258,7 @@ def evaluar(d: dict) -> tuple[dict, dict]:
     fig.legend(manejadores, etiquetas, loc="upper center", bbox_to_anchor=(0.5, 0.93), ncol=2, frameon=False)
     fig.tight_layout(rect=(0, 0, 1, 0.86))
     figs["distribuciones"] = SALIDA / "t2_distribuciones_antes_despues.png"
-    fig.savefig(figs["distribuciones"], dpi=160)
+    fig.savefig(figs["distribuciones"], dpi=220, bbox_inches="tight")
     plt.close(fig)
 
     serie = u.dropna(subset=["siv_casos_mujeres", "api_casos_mujeres"]).copy()
@@ -273,7 +273,7 @@ def evaluar(d: dict) -> tuple[dict, dict]:
     ax.legend(frameon=False)
     fig.tight_layout()
     figs["series"] = SALIDA / "t5_series_indexadas.png"
-    fig.savefig(figs["series"], dpi=160)
+    fig.savefig(figs["series"], dpi=220, bbox_inches="tight")
     plt.close(fig)
 
     com["pct_siv"] = com["sivigila"] / com["sivigila"].sum() * 100
@@ -290,7 +290,7 @@ def evaluar(d: dict) -> tuple[dict, dict]:
     ax.set_title(f"T6 · Comunas: SIVIGILA vs OSEC · ρ = {r['T6']['rho']}", fontsize=10)
     fig.tight_layout()
     figs["comunas"] = SALIDA / "t6_comunas_sivigila_osec.png"
-    fig.savefig(figs["comunas"], dpi=160)
+    fig.savefig(figs["comunas"], dpi=220, bbox_inches="tight")
     plt.close(fig)
     return r, figs
 

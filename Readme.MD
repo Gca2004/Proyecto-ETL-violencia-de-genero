@@ -164,13 +164,38 @@ extraer_scraping ─┘                                                    │
 
 ## 🖼️ Visualizaciones
 
-| DAG de la entrega final | Reporte estático (1 página) |
+### Modelo de datos (constelación de hechos)
+
+<div align="center">
+
+![Diagrama del modelo galaxia](Docs/Diagrama_galaxia_segunda_entrega.png)
+
+*Cuatro tablas de hechos (SIVIGILA, Medicina Legal, OSEC y ECV 2024) comparten las dimensiones de lugar y tiempo.*
+
+</div>
+
+Diagrama completo de la base de datos (zona cruda, staging, modelo y vistas): [`Docs/Graficas/base_de_datos_completa.png`](Docs/Graficas/base_de_datos_completa.png)
+
+### Del análisis al modelo
+
+| EDA: ciclo de vida vs. agresor (Medicina Legal) | Matriz de confusión del modelo (2022-2024) |
 |---|---|
-| ![DAG](Docs/Graficas/dag_entrega_final.png) | ![Reporte estático](Docs/Graficas/reporte_estatico.png) |
-| **Dashboard en tiempo real** | **Mapa de zonas del DANE** |
-| ![Dashboard Streamlit](Docs/Graficas/dashboard_streamlit.png) | ![Mapa de zonas](Docs/Graficas/mapa_zonas_dane.png) |
-| **Matriz de confusión del modelo (2022-2024)** | **Evaluación del merge: comunas SIVIGILA vs OSEC** |
-| ![Matriz de confusión](Docs/Graficas/ml_matriz_confusion.png) | ![Comunas SIVIGILA vs OSEC](Docs/evaluacion_merge/t6_comunas_sivigila_osec.png) |
+| ![Ciclo de vida vs agresor](Docs/notebook/graficas_eda/14_api_ciclo_vs_agresor.png) | ![Matriz de confusión](Docs/Graficas/ml_matriz_confusion.png) |
+| El EDA mostró que en menores el agresor suele ser padre o madre: es la señal que aprende el modelo. | En años no vistos detecta 109 de 125 casos de padre/madre (recall 87 %). |
+
+### Evaluación estadística del merge
+
+| Distribuciones antes vs. después del cruce | Comunas: SIVIGILA vs. OSEC (ρ = 0.82) |
+|---|---|
+| ![Distribuciones antes y después](Docs/evaluacion_merge/t2_distribuciones_antes_despues.png) | ![Comunas SIVIGILA vs OSEC](Docs/evaluacion_merge/t6_comunas_sivigila_osec.png) |
+
+<!-- Capturas del sistema en ejecución: guardarlas en Docs/Graficas/ con estos nombres y quitar este comentario.
+| DAG de la entrega final | Dashboard en tiempo real |
+|---|---|
+| ![DAG](Docs/Graficas/dag_entrega_final.png) | ![Dashboard](Docs/Graficas/dashboard_streamlit.png) |
+| **Mapa de zonas del DANE** | **Reporte estático** |
+| ![Mapa](Docs/Graficas/mapa_zonas_dane.png) | ![Reporte](Docs/Graficas/reporte_estatico.png) |
+-->
 
 Más resultados: [reporte estático](Docs/reporte_estatico.html) · [evaluación del merge](Docs/evaluacion_merge/evaluacion_merge.md) · [notebooks de EDA](Docs/notebook/).
 

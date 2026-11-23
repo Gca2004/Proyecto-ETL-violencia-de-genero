@@ -184,7 +184,9 @@ extraer_scraping ─┘                                                    │
 | 9 | `cargar_fuentes_nuevas` | Staging → modelo dimensional y vista de ML |
 | 10 | `publicar_kafka` | Productor incremental hacia el tópico |
 
+<!-- Captura: guardar Docs/Graficas/dag_entrega_final.png y quitar este comentario
 ![DAG de la entrega final con las 10 tareas en verde](Graficas/dag_entrega_final.png)
+-->
 
 | Parámetro | Valor | Por qué |
 |---|---|---|
@@ -244,6 +246,10 @@ Se usa **Great Expectations 1.24.0** en **dos puntos** del DAG:
 
 Además: `dataset_unificado` (una fila por año-mes, con una columna por fuente) y `vista_comuna_anual`.
 
+![Modelo de constelación de hechos (esquema galaxia)](Diagrama_galaxia_segunda_entrega.png)
+
+Diagrama completo de la base de datos (zona cruda, staging, modelo y vistas): [`Graficas/base_de_datos_completa.png`](Graficas/base_de_datos_completa.png).
+
 **Medida que se publica en Kafka.** Cada evento es **un caso de `hechos_api_violencia`** con las características del hecho que se conocen **sin saber quién fue el agresor** (escenario, ciclo de vida, turno, días de incapacidad, área, mes), más su identificador. La vista `vista_ml_hechos_enriquecidos` arma ese registro uniendo la tabla de hechos con sus dimensiones y el contexto cruzado (OSEC, ECV). La medida que agrega el flujo operativo es la **probabilidad de que el agresor sea padre, madre o padrastro**, que calcula el consumidor.
 
 ---
@@ -284,6 +290,10 @@ Script: [`analisis/evaluacion_merge.py`](../analisis/evaluacion_merge.py). Resul
 ### 12.1 Problema y objetivo
 - **Variable objetivo:** `grupo_agresor` en binario. **1** = padre, madre o padrastro; **0** = otro familiar.
 - **Datos:** `vista_ml_hechos_enriquecidos`. Son 1,936 casos; se usan 1,928, porque se excluyen 8 de "cuidador" y "no reportado" (muy pocos para aprender).
+- **Evidencia del EDA:** el cruce de ciclo de vida y agresor ya mostraba que en menores el agresor suele ser el padre o la madre.
+
+![EDA: ciclo de vida vs. presunto agresor (Medicina Legal)](notebook/graficas_eda/14_api_ciclo_vs_agresor.png)
+
 - **Por qué predecirlo:** si la víctima es menor y el agresor probable es su padre o madre, hay que activar la ruta de protección. El modelo **prioriza** casos para revisión; **no identifica ni acusa a ninguna persona**.
 
 ### 12.2 Características
@@ -418,7 +428,9 @@ Así, cuando la API publica casos nuevos, el DAG diario los recoge, los valida, 
 
 El reporte cierra con **conclusiones y recomendaciones** calculadas con los datos: proteger primero a niñas y adolescentes; enfocar la prevención en el hogar y la pareja; focalizar comunas e investigar la brecha de García Rovira; usar las fuentes como lentes distintos y no sumarlas.
 
+<!-- Captura: guardar Docs/Graficas/reporte_estatico.png y quitar este comentario
 ![Reporte analítico estático de una página](Graficas/reporte_estatico.png)
+-->
 
 **Regenerar:** `python analisis/evaluacion_merge.py` y luego `python reporte_estatico.py`.
 
@@ -444,9 +456,11 @@ El reporte cierra con **conclusiones y recomendaciones** calculadas con los dato
 - **Robustez:** un área, municipio o valor nuevo no rompe el mapa ni las gráficas. Un **cuadre automático** verifica que todas las gráficas sumen los casos de la vista.
 - Se eligió Streamlit sobre Dash por la rapidez para prototipar y por los fragmentos, que eliminan la sobrecarga de recargar todo el script.
 
+<!-- Capturas: guardar en Docs/Graficas/ y quitar este comentario
 ![Dashboard en tiempo real: métricas, último caso y acción sugerida](Graficas/dashboard_streamlit.png)
 
 ![Mapa de zonas oficiales del DANE con casos y alertas](Graficas/mapa_zonas_dane.png)
+-->
 
 **Ejecutar:** `python consumer.py` y `streamlit run app.py`.
 

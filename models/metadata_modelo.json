@@ -1,5 +1,5 @@
 {
-  "fecha_entrenamiento": "2026-11-23T02:13:58.537050+00:00",
+  "fecha_entrenamiento": "2026-11-23T06:57:45.406811+00:00",
   "version_sklearn": "1.9.1",
   "pregunta": "Probabilidad de que el agresor sea PADRE, MADRE O PADRASTROS frente a OTRO FAMILIAR",
   "target": "grupo_agresor",
