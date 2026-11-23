@@ -1,0 +1,48 @@
+{
+  "fecha_entrenamiento": "2026-11-23T02:13:58.537050+00:00",
+  "version_sklearn": "1.9.1",
+  "pregunta": "Probabilidad de que el agresor sea PADRE, MADRE O PADRASTROS frente a OTRO FAMILIAR",
+  "target": "grupo_agresor",
+  "clases": {
+    "0": "OTRO FAMILIAR",
+    "1": "PADRE, MADRE O PADRASTROS"
+  },
+  "features": [
+    "escenario",
+    "ciclo_vida",
+    "turno",
+    "dias_incapacidad",
+    "area",
+    "mes"
+  ],
+  "modelo": "regresion_logistica",
+  "hiperparametros": {
+    "modelo__C": 1.0
+  },
+  "division": {
+    "tipo": "temporal",
+    "entrenamiento_hasta": 2021,
+    "prueba_desde": 2022,
+    "casos_entrenamiento": 1429,
+    "casos_prueba": 499
+  },
+  "metricas_prueba": {
+    "roc_auc": 0.9167,
+    "brier": 0.0881,
+    "precision_padres": 0.645,
+    "f1_macro": 0.8168,
+    "balanced_accuracy": 0.8558,
+    "recall_padres": 0.872
+  },
+  "metricas_entrenamiento": {
+    "roc_auc": 0.9116,
+    "brier": 0.0983,
+    "precision_padres": 0.557,
+    "f1_macro": 0.7659,
+    "balanced_accuracy": 0.828,
+    "recall_padres": 0.9046
+  },
+  "modelo_desplegado": "reentrenado con todos los datos tras la evaluación",
+  "umbral_alerta": 0.1839,
+  "recall_objetivo": 0.9
+}

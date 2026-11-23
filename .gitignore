@@ -43,4 +43,4 @@ data/eda_cache/
 Thumbs.db
 desktop.ini
 .vscode/
-.idea/
+.idea/docker-compose.override.yml
