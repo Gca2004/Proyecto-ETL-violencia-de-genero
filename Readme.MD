@@ -152,7 +152,7 @@ extraer_scraping ─┘                                                    │
 |---|---|---|
 | Lee | Modelo dimensional validado | Solo `predicciones_agresor` (salida del consumidor) |
 | Se actualiza | Al regenerarlo (foto en un punto del tiempo) | Solo, con fragmentos de Streamlit (1 s a 5 min) |
-| Contenido | 8 preguntas con hallazgos + conclusiones y recomendaciones, en 1 página | Alertas, prioridad y acción sugerida, mapa de zonas del DANE, lista para revisión manual, monitor del flujo |
+| Contenido | 4 preguntas clave + 5 cifras | Alertas, prioridad y acción sugerida, mapa de zonas del DANE, lista para revisión manual, monitor del flujo |
 | Salida | `Docs/reporte_estatico.html` (imprimible a PDF) | `http://localhost:8501` |
 
 ## 🔎 Hallazgos principales
